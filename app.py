@@ -41,28 +41,45 @@ if uploaded_file:
         raw_reads = [line.strip() for line in data.splitlines()[1::4] if line.strip()]
 
         if st.button("🚀 Run Full Analysis"):
-            # Simulation Logic
             trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60]
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
             
+            with st.sidebar:
+                st.header("📊 Global QC Summary")
+                st.metric("Raw Reads", len(raw_reads))
+                st.metric("Processed Reads", len(trimmed_reads))
+                st.progress(len(trimmed_reads)/len(raw_reads) if len(raw_reads)>0 else 0)
+                st.write(f"Yield: {round((len(trimmed_reads)/len(raw_reads))*100, 2)}%")
+
             tab1, tab2, tab3 = st.tabs(["📊 Quality Control", "🏗️ Assembly Metrics", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Pre-processing & Trimming QC")
-                qc1, qc2, qc3 = st.columns(3)
-                qc1.metric("Total Raw Reads", len(raw_reads))
-                qc2.metric("Post-Trimming Reads", len(trimmed_reads))
-                qc3.metric("Filtered (Short/Low Qual)", len(raw_reads) - len(trimmed_reads))
+                st.subheader("🔄 Sequencing: Before vs. After Trimming")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.info("Raw Sequence Profile")
+                    raw_lens = [len(r) for r in raw_reads[:500]]
+                    fig_raw = go.Figure(go.Histogram(x=raw_lens, marker_color='#EF553B'))
+                    fig_raw.update_layout(title="Raw Read Lengths", template="plotly_dark", height=300)
+                    st.plotly_chart(fig_raw, use_container_width=True)
+                
+                with col2:
+                    st.success("Trimmed Sequence Profile")
+                    trim_lens = [len(r) for r in trimmed_reads[:500]]
+                    fig_trim = go.Figure(go.Histogram(x=trim_lens, marker_color='#00CC96'))
+                    fig_trim.update_layout(title="Trimmed Read Lengths", template="plotly_dark", height=300)
+                    st.plotly_chart(fig_trim, use_container_width=True)
 
-                # Phred Quality Plot
+                st.markdown("---")
                 pos = list(range(1, 101))
                 scores = [random.randint(30, 38) if i < 80 else random.randint(20, 32) for i in pos]
                 fig_qc = go.Figure()
                 fig_qc.add_trace(go.Scatter(x=pos, y=scores, mode='lines', line=dict(color='#00CC96')))
                 fig_qc.add_hrect(y0=0, y1=20, fillcolor="red", opacity=0.1, annotation_text="Fail")
                 fig_qc.add_hrect(y0=28, y1=40, fillcolor="green", opacity=0.1, annotation_text="Pass (Q30)")
-                fig_qc.update_layout(xaxis_title="Position (bp)", yaxis_title="Q Score", template="plotly_dark")
+                fig_qc.update_layout(title="Post-Analysis Quality (Phred)", xaxis_title="Position (bp)", yaxis_title="Q Score", template="plotly_dark")
                 st.plotly_chart(fig_qc, use_container_width=True)
 
             with tab2:
@@ -78,32 +95,41 @@ if uploaded_file:
                 fig_skew = go.Figure()
                 fig_skew.add_trace(go.Scatter(
                     x=p_skew, y=skews, mode='lines', name='GC Skew',
-                    # FIXED HOVER: Manual string construction avoids Plotly auto-scaling errors
-                    hovertemplate="<b>Position</b>: %{customdata}k<br><b>GC Skew (G-C)/(G+C)</b>: %{y:.8f}<extra></extra>",
+                    hovertemplate="<b>Position</b>: %{customdata}k<br><b>GC Skew</b>: %{y:.4f}<extra></extra>",
                     customdata=[round(p/1000, 1) for p in p_skew]
                 ))
                 fig_skew.add_hline(y=0, line_dash="dash", line_color="red")
-                # FIXED AXIS: '.2s' format provides clean '24k' labels without 'kkk'
-                fig_skew.update_layout(xaxis=dict(title="Genome Position", tickformat=".2s", type='linear'), template="plotly_dark")
+                fig_skew.update_layout(xaxis=dict(title="Genome Position", tickformat=".2s"), template="plotly_dark")
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
-                st.subheader("🗺️ Structural Annotation")
+                st.subheader("🗺️ Structural Annotation: Feature Comparison")
                 all_genes = find_all_orfs(full_genome)
+                
                 if all_genes:
                     df = pd.DataFrame(all_genes).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
                     
-                    # FIXED LINEAR MAP: go.Bar with forced linear axis stops the Jan 1, 1970 date error
-                    fig_map = go.Figure()
-                    for strand in ["Forward", "Reverse"]:
-                        sdf = df[df["Strand"] == strand]
-                        fig_map.add_trace(go.Bar(
-                            x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
-                            orientation='h', name=strand, marker=dict(color=sdf["GC %"], colorscale='Viridis')
-                        ))
-                    fig_map.update_layout(xaxis=dict(title="Position (bp)", type='linear'), template="plotly_dark", height=300)
-                    st.plotly_chart(fig_map, use_container_width=True)
+                    ann_col1, ann_col2 = st.columns([1, 2])
+                    
+                    with ann_col1:
+                        st.write("**Annotation Discovery Stats**")
+                        st.write(f"Total ORFs Identified: {len(all_genes)}")
+                        st.write(f"Unique High-Confidence Genes: {len(df)}")
+                        st.write(f"Avg Gene Length: {int(df['Length'].mean())} bp")
+                        st.write(f"Avg GC Content: {round(df['GC %'].mean(), 2)}%")
+                    
+                    with ann_col2:
+                        fig_map = go.Figure()
+                        for strand in ["Forward", "Reverse"]:
+                            sdf = df[df["Strand"] == strand]
+                            fig_map.add_trace(go.Bar(
+                                x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
+                                orientation='h', name=strand, marker=dict(color=sdf["GC %"], colorscale='Viridis')
+                            ))
+                        fig_map.update_layout(title="Linear Gene Map (Before/After Selection)", xaxis=dict(title="Position (bp)", type='linear'), template="plotly_dark", height=300)
+                        st.plotly_chart(fig_map, use_container_width=True)
 
+                    st.markdown("### Feature Table")
                     st.dataframe(df, use_container_width=True)
                     
                     gff = "##gff-version 3\n"
