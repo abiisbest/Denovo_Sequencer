@@ -48,26 +48,19 @@ if uploaded_file:
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC", "🏗️ Assembly Metrics", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Sequencing QC: Before vs. After Filtering")
+                st.subheader("🛡️ Sequencing Comparison")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Raw Reads (Before)", len(raw_reads))
+                c2.metric("Trimmed Reads (After)", len(trimmed_reads))
+                c3.metric("Filtered Out", len(raw_reads) - len(trimmed_reads), delta_color="inverse")
                 
-                fig_qc_bar = go.Figure(data=[
-                    go.Bar(name='Before', x=['Read Count'], y=[len(raw_reads)], marker_color='#EF553B', text=[len(raw_reads)], textposition='auto'),
-                    go.Bar(name='After', x=['Read Count'], y=[len(trimmed_reads)], marker_color='#00CC96', text=[len(trimmed_reads)], textposition='auto')
-                ])
-                
-                fig_qc_bar.update_layout(
-                    template="plotly_dark", 
-                    height=400, 
-                    showlegend=False, 
-                    yaxis_title="Number of Reads",
-                    barmode='group'
-                )
-                st.plotly_chart(fig_qc_bar, use_container_width=True)
-                
-                st.info(f"Analysis complete: {len(raw_reads) - len(trimmed_reads)} low-quality reads removed.")
+                st.write("---")
+                st.info(f"Filtering complete. Final yield: {round((len(trimmed_reads)/len(raw_reads))*100, 2)}% of original data retained.")
 
             with tab2:
                 st.subheader("📈 Assembly & GC Skew Analysis")
+                st.latex(r"GC\ Skew = \frac{G - C}{G + C}")
+                
                 window = 500
                 skews, p_skew = [], []
                 for i in range(0, total_len - window, window):
@@ -87,43 +80,32 @@ if uploaded_file:
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
-                st.subheader("🧬 Annotation: Potential ORFs vs. Validated Genes")
+                st.subheader("🧬 Annotation Comparison")
                 
                 all_raw_orfs = find_all_orfs(full_genome)
                 final_genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
                 
-                col1, col2 = st.columns([1, 2])
-                
-                with col1:
-                    fig_ann_bar = go.Figure(data=[
-                        go.Bar(name='Before', x=['Features'], y=[len(all_raw_orfs)], marker_color='#AB63FA', text=[len(all_raw_orfs)], textposition='auto'),
-                        go.Bar(name='After', x=['Features'], y=[len(final_genes_df)], marker_color='#19D3F3', text=[len(final_genes_df)], textposition='auto')
-                    ])
-                    fig_ann_bar.update_layout(
-                        template="plotly_dark", 
-                        height=400, 
-                        showlegend=False, 
-                        yaxis_title="Count",
-                        barmode='group'
-                    )
-                    st.plotly_chart(fig_ann_bar, use_container_width=True)
-                
-                with col2:
-                    fig_map = go.Figure()
-                    for strand in ["Forward", "Reverse"]:
-                        sdf = final_genes_df[final_genes_df["Strand"] == strand]
-                        fig_map.add_trace(go.Bar(
-                            x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
-                            orientation='h', marker=dict(color=sdf["GC %"], colorscale='Viridis')
-                        ))
-                    fig_map.update_layout(
-                        title="Final Genomic Architecture",
-                        xaxis=dict(title="Position (bp)", type='linear'), 
-                        template="plotly_dark", 
-                        height=400, 
-                        showlegend=False
-                    )
-                    st.plotly_chart(fig_map, use_container_width=True)
+                a1, a2, a3 = st.columns(3)
+                a1.metric("Total ORFs (Before)", len(all_raw_orfs))
+                a2.metric("Validated Genes (After)", len(final_genes_df))
+                a3.metric("Reduction Rate", f"{round((1 - len(final_genes_df)/len(all_raw_orfs))*100, 1)}%")
+
+                st.write("---")
+                st.subheader("Final Genomic Architecture")
+                fig_map = go.Figure()
+                for strand in ["Forward", "Reverse"]:
+                    sdf = final_genes_df[final_genes_df["Strand"] == strand]
+                    fig_map.add_trace(go.Bar(
+                        x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
+                        orientation='h', marker=dict(color=sdf["GC %"], colorscale='Viridis')
+                    ))
+                fig_map.update_layout(
+                    xaxis=dict(title="Position (bp)", type='linear'), 
+                    template="plotly_dark", 
+                    height=300, 
+                    showlegend=False
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
                 
                 st.dataframe(final_genes_df, use_container_width=True)
 
