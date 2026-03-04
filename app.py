@@ -45,12 +45,23 @@ if uploaded_file:
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
             
+            # Sidebar to show Before/After metrics
             with st.sidebar:
-                st.header("📊 Global QC Summary")
-                st.metric("Raw Reads", len(raw_reads))
-                st.metric("Processed Reads", len(trimmed_reads))
-                st.progress(len(trimmed_reads)/len(raw_reads) if len(raw_reads)>0 else 0)
-                st.write(f"Yield: {round((len(trimmed_reads)/len(raw_reads))*100, 2)}%")
+                st.header("📊 Global Metrics")
+                st.markdown("---")
+                st.subheader("Sequencing Comparison")
+                raw_count = len(raw_reads)
+                trimmed_count = len(trimmed_reads)
+                reads_removed = raw_count - trimmed_count
+                st.metric(label="Raw Reads (Before)", value=raw_count)
+                st.metric(label="Trimmed Reads (After)", value=trimmed_count)
+                st.metric(label="Reads Removed", value=reads_removed)
+                st.markdown("---")
+                
+                # These will be updated later
+                st.subheader("Annotation Comparison")
+                gene_placeholder_before = st.empty()
+                gene_placeholder_after = st.empty()
 
             tab1, tab2, tab3 = st.tabs(["📊 Quality Control", "🏗️ Assembly Metrics", "🧬 Functional Annotation"])
 
@@ -62,14 +73,14 @@ if uploaded_file:
                     st.info("Raw Sequence Profile")
                     raw_lens = [len(r) for r in raw_reads[:500]]
                     fig_raw = go.Figure(go.Histogram(x=raw_lens, marker_color='#EF553B'))
-                    fig_raw.update_layout(title="Raw Read Lengths", template="plotly_dark", height=300)
+                    fig_raw.update_layout(title="Raw Read Length Distribution", template="plotly_dark", height=300)
                     st.plotly_chart(fig_raw, use_container_width=True)
                 
                 with col2:
                     st.success("Trimmed Sequence Profile")
                     trim_lens = [len(r) for r in trimmed_reads[:500]]
                     fig_trim = go.Figure(go.Histogram(x=trim_lens, marker_color='#00CC96'))
-                    fig_trim.update_layout(title="Trimmed Read Lengths", template="plotly_dark", height=300)
+                    fig_trim.update_layout(title="Trimmed Read Length Distribution", template="plotly_dark", height=300)
                     st.plotly_chart(fig_trim, use_container_width=True)
 
                 st.markdown("---")
@@ -104,27 +115,34 @@ if uploaded_file:
 
             with tab3:
                 st.subheader("🗺️ Structural Annotation: Feature Comparison")
-                all_genes = find_all_orfs(full_genome)
+                all_genes_before = find_all_orfs(full_genome)
                 
-                if all_genes:
-                    df = pd.DataFrame(all_genes).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
+                # Update annotation metrics in sidebar
+                gene_placeholder_before.metric("Raw ORFs Found (Before)", len(all_genes_before))
+
+                if all_genes_before:
+                    df = pd.DataFrame(all_genes_before).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
+                    
+                    # Update 'after' metric
+                    gene_placeholder_after.metric("High-Confidence Genes (After)", len(df))
                     
                     ann_col1, ann_col2 = st.columns([1, 2])
                     
                     with ann_col1:
-                        st.write("**Annotation Discovery Stats**")
-                        st.write(f"Total ORFs Identified: {len(all_genes)}")
-                        st.write(f"Unique High-Confidence Genes: {len(df)}")
-                        st.write(f"Avg Gene Length: {int(df['Length'].mean())} bp")
-                        st.write(f"Avg GC Content: {round(df['GC %'].mean(), 2)}%")
+                        st.write("**Annotation Filtering Stats**")
+                        st.write(f"Raw ORFs Found: {cite: len(all_genes_before)}")
+                        st.write(f"Duplicates Removed: {cite: len(all_genes_before) - len(df)}")
+                        st.write(f"Unique Genes Identified: {cite: len(df)}")
+                        st.write(f"Avg Gene Length: {cite: int(df['Length'].mean())} bp")
+                        st.write(f"Avg GC Content: {cite: round(df['GC %'].mean(), 2)}%")
                     
                     with ann_col2:
                         fig_map = go.Figure()
                         for strand in ["Forward", "Reverse"]:
-                            sdf = df[df["Strand"] == strand]
+                            sdf = df == strand]
                             fig_map.add_trace(go.Bar(
-                                x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
-                                orientation='h', name=strand, marker=dict(color=sdf["GC %"], colorscale='Viridis')
+                                x=sdf, y=sdf, base=sdf, 
+                                orientation='h', name=strand, marker=dict(color=sdf, colorscale='Viridis')
                             ))
                         fig_map.update_layout(title="Linear Gene Map (Before/After Selection)", xaxis=dict(title="Position (bp)", type='linear'), template="plotly_dark", height=300)
                         st.plotly_chart(fig_map, use_container_width=True)
@@ -134,9 +152,9 @@ if uploaded_file:
                     
                     gff = "##gff-version 3\n"
                     for i, row in df.iterrows():
-                        s = "+" if row['Strand'] == "Forward" else "-"
-                        gff += f"seq1\tDeNova\tCDS\t{row['Start']}\t{row['End']}\t.\t{s}\t0\tID=gene_{i}\n"
+                        s = "+" if row == "Forward" else "-"
+                        gff += f"seq1\tDeNova\tCDS\t{cite: row['Start']}\t{cite: row['End']}\t.\t{cite: s}\t0\tID=gene_{cite: i}\n"
                     st.download_button("💾 Download GFF3", gff, "annotation.gff3")
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error: {cite: e}")
