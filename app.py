@@ -4,7 +4,6 @@ import re
 import pandas as pd
 import plotly.graph_objects as go
 import random
-import locale
 
 st.set_page_config(page_title="De Nova Professional Suite", layout="wide")
 
@@ -55,13 +54,19 @@ if uploaded_file:
 
             with tab1:
                 st.subheader("🛡️ Sequencing Comparison")
+                raw_n = len(raw_reads)
+                trim_n = len(trimmed_reads)
+                diff_n = raw_n - trim_n
+                perc_yield = (trim_n / raw_n * 100) if raw_n > 0 else 0
+                perc_loss = (diff_n / raw_n * 100) if raw_n > 0 else 0
+
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Raw Reads (Before)", format_indian_num(len(raw_reads)))
-                c2.metric("Trimmed Reads (After)", format_indian_num(len(trimmed_reads)))
-                c3.metric("Filtered Out", format_indian_num(len(raw_reads) - len(trimmed_reads)), delta_color="inverse")
+                c1.metric("Raw Reads (Before)", format_indian_num(raw_n), "100%")
+                c2.metric("Trimmed Reads (After)", format_indian_num(trim_n), f"{perc_yield:.2f}%")
+                c3.metric("Filtered Out", format_indian_num(diff_n), f"-{perc_loss:.2f}%", delta_color="inverse")
                 
                 st.write("---")
-                st.info(f"Filtering complete. Final yield: {round((len(trimmed_reads)/len(raw_reads))*100, 2)}% of original data retained.")
+                st.info(f"Filtering complete. Final yield: {perc_yield:.2f}% of original data retained.")
 
             with tab2:
                 st.subheader("📈 Assembly & GC Skew Analysis")
@@ -91,10 +96,15 @@ if uploaded_file:
                 all_raw_orfs = find_all_orfs(full_genome)
                 final_genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
                 
+                orf_n = len(all_raw_orfs)
+                gene_n = len(final_genes_df)
+                reduction_perc = (1 - gene_n / orf_n) * 100 if orf_n > 0 else 0
+                retention_perc = (gene_n / orf_n) * 100 if orf_n > 0 else 0
+
                 a1, a2, a3 = st.columns(3)
-                a1.metric("Total ORFs (Before)", format_indian_num(len(all_raw_orfs)))
-                a2.metric("Validated Genes (After)", format_indian_num(len(final_genes_df)))
-                a3.metric("Reduction Rate", f"{round((1 - len(final_genes_df)/len(all_raw_orfs))*100, 1)}%")
+                a1.metric("Total ORFs (Before)", format_indian_num(orf_n), "100%")
+                a2.metric("Validated Genes (After)", format_indian_num(gene_n), f"{retention_perc:.2f}%")
+                a3.metric("Reduction Rate", f"{reduction_perc:.2f}%", delta_color="normal")
 
                 st.write("---")
                 st.subheader("Final Genomic Architecture")
