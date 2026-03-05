@@ -32,7 +32,7 @@ def find_all_orfs(sequence, min_len=300):
                 found_genes.append({
                     "Strand": strand, "Start": int(start_pos), "End": int(start_pos + len(gene_seq)),
                     "Length": int(len(gene_seq)), "GC %": round((gene_seq.count('G') + gene_seq.count('C')) / len(gene_seq) * 100, 2),
-                    "Sequence": gene_seq
+                    "Sequence": gene_seq, "Type": "Gene"
                 })
     return found_genes
 
@@ -91,12 +91,10 @@ if uploaded_file:
                     st.info("**Slicing Logic (QC)**")
                     st.write("- **Method:** Hard Trimming (5bp Leading/Trailing)")
                     st.write("- **Threshold:** Discard if post-trim length < 60bp")
-                    st.write("- **Purpose:** Removes low-confidence adapter/primer regions.")
                 with l2:
                     st.success("**Codon Identification (Annotation)**")
-                    st.write("- **Start Tag:** ATG (Methionine)")
-                    st.write("- **Stop Tags:** TAG, TAA, TGA")
-                    st.write("- **Min Length:** 300 bp (100 Amino Acids)")
+                    st.write("- **Start Tag:** ATG | **Stop Tags:** TAG, TAA, TGA")
+                    st.write("- **Min Length:** 300 bp")
 
             with tab2:
                 st.subheader("📈 Assembly & GC Skew Analysis")
@@ -118,41 +116,67 @@ if uploaded_file:
             with tab3:
                 st.subheader("🧬 Annotation Comparison")
                 all_raw_orfs = find_all_orfs(full_genome)
-                final_genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
-                orf_n, gene_n = len(all_raw_orfs), len(final_genes_df)
+                genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
+                
+                # Metrics
+                orf_n, gene_n = len(all_raw_orfs), len(genes_df)
                 retention_perc = (gene_n / orf_n * 100) if orf_n > 0 else 0
-                reduction_perc = (100 - retention_perc)
-
                 a1, a2, a3 = st.columns(3)
-                a1.metric("Total ORFs (Before)", format_indian_num(orf_n), "100%")
+                a1.metric("Total ORFs (Before)", format_indian_num(orf_n))
                 a2.metric("Validated Genes (After)", format_indian_num(gene_n), f"{retention_perc:.2f}%")
-                a3.metric("Reduction Rate", f"{reduction_perc:.2f}%", delta_color="normal")
+                a3.metric("Reduction Rate", f"{100-retention_perc:.2f}%")
 
                 st.write("---")
+                st.subheader("Continuous Genomic Map (Gaps Removed)")
+                
                 fig_map = go.Figure()
                 for strand in ["Forward", "Reverse"]:
-                    sdf = final_genes_df[final_genes_df["Strand"] == strand]
-                    fig_map.add_trace(go.Bar(x=sdf["Length"], y=sdf["Strand"], base=sdf["Start"], 
-                        orientation='h', marker=dict(color=sdf["GC %"], colorscale='Viridis')))
-                fig_map.update_layout(xaxis=dict(title="Position (bp)", type='linear'), template="plotly_dark", height=300, showlegend=False)
+                    sdf = genes_df[genes_df["Strand"] == strand].copy()
+                    
+                    # LOGIC: Identify gaps and fill with Non-Coding blocks
+                    last_end = 0
+                    plot_data = []
+                    for _, row in sdf.iterrows():
+                        if row['Start'] > last_end:
+                            # Fill Gap
+                            plot_data.append({"Start": last_end, "Len": row['Start'] - last_end, "Type": "Non-Coding", "GC": 0})
+                        # Add Gene
+                        plot_data.append({"Start": row['Start'], "Len": row['Length'], "Type": "Gene", "GC": row['GC %']})
+                        last_end = row['End']
+                    
+                    # Fill Final Gap
+                    if last_end < total_len:
+                        plot_data.append({"Start": last_end, "Len": total_len - last_end, "Type": "Non-Coding", "GC": 0})
+                    
+                    pdf = pd.DataFrame(plot_data)
+                    colors = ['#444444' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
+                    
+                    fig_map.add_trace(go.Bar(
+                        x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], 
+                        orientation='h', marker=dict(color=colors),
+                        hovertemplate="Type: %{customdata}<extra></extra>",
+                        customdata=pdf["Type"]
+                    ))
+
+                fig_map.update_layout(xaxis=dict(title="Position (bp)", type='linear'), barmode='stack', 
+                                      template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
-                st.dataframe(final_genes_df.drop(columns=['Sequence']), use_container_width=True)
+                
+                st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
 
                 st.write("---")
                 st.subheader("📂 Multi-Format Export Center")
                 ex1, ex2, ex3, ex4 = st.columns(4)
-                csv_data = final_genes_df.to_csv(index=False)
+                csv_data = genes_df.to_csv(index=False)
                 ex1.download_button("📄 CSV", csv_data, "genes.csv", "text/csv", use_container_width=True)
-                json_data = final_genes_df.to_json(orient="records")
+                json_data = genes_df.to_json(orient="records")
                 ex2.download_button("💻 JSON", json_data, "genes.json", "application/json", use_container_width=True)
                 gff = "##gff-version 3\n"
-                for i, row in final_genes_df.iterrows():
-                    strand = "+" if row['Strand'] == "Forward" else "-"
-                    gff += f"seq1\tDeNova\tCDS\t{row['Start']}\t{row['End']}\t.\t{strand}\t0\tID=gene_{i};GC={row['GC %']}\n"
+                for i, row in genes_df.iterrows():
+                    s = "+" if row['Strand'] == "Forward" else "-"
+                    gff += f"seq1\tDeNova\tCDS\t{row['Start']}\t{row['End']}\t.\t{s}\t0\tID=gene_{i}\n"
                 ex3.download_button("🧬 GFF3", gff, "annotation.gff3", "text/plain", use_container_width=True)
-                fasta = ""
-                for i, row in final_genes_df.iterrows():
-                    fasta += f">gene_{i} | {row['Strand']} | GC:{row['GC %']}%\n{row['Sequence']}\n"
+                fasta = "".join([f">gene_{i}\n{row['Sequence']}\n" for i, row in genes_df.iterrows()])
                 ex4.download_button("📝 FASTA", fasta, "sequences.fasta", "text/plain", use_container_width=True)
 
     except Exception as e:
