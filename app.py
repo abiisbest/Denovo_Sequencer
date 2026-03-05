@@ -55,50 +55,62 @@ if uploaded_file:
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Assembly Metrics", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Comprehensive Sequencing QC Report")
+                st.subheader("🛡️ Comprehensive Sequencing QC & Nucleotide Profile")
+                
                 raw_n, trim_n = len(raw_reads), len(trimmed_reads)
-                diff_n = raw_n - trim_n
                 trim_bases = sum(len(r) for r in trimmed_reads)
                 avg_len = trim_bases / trim_n if trim_n > 0 else 0
                 perc_yield = (trim_n / raw_n * 100) if raw_n > 0 else 0
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Raw Reads", format_indian_num(raw_n))
-                c2.metric("Filtered Reads", format_indian_num(trim_n), f"{perc_yield:.2f}% Yield")
-                c3.metric("Total Bases", f"{trim_bases/1e6:.2f} Mb")
-                c4.metric("Avg Read Length", f"{int(avg_len)} bp")
+                # Top Metrics
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Raw Reads", format_indian_num(raw_n))
+                m2.metric("Filtered Reads", format_indian_num(trim_n), f"{perc_yield:.2f}% Yield")
+                m3.metric("Data Throughput", f"{trim_bases/1e6:.2f} Mb")
+                m4.metric("Avg Read Length", f"{int(avg_len)} bp")
 
                 st.markdown("---")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.write("**Nucleotide Composition**")
-                    all_text = "".join(trimmed_reads[:500])
-                    counts = {base: all_text.count(base) for base in "ACGT"}
-                    fig_pie = go.Figure(data=[go.Pie(labels=list(counts.keys()), values=list(counts.values()), hole=.3)])
-                    fig_pie.update_layout(template="plotly_dark", height=300, showlegend=False)
+                
+                # Nucleotide Frequency Table
+                st.write("**Detailed Nucleotide Distribution**")
+                sample_text = "".join(trimmed_reads[:1000])
+                nuc_counts = {base: sample_text.count(base) for base in "ACGTN"}
+                nuc_df = pd.DataFrame([nuc_counts]).T.reset_index()
+                nuc_df.columns = ["Nucleotide", "Total Count"]
+                nuc_df["Frequency (%)"] = round((nuc_df["Total Count"] / sum(nuc_counts.values())) * 100, 2)
+                
+                c_table, c_pie = st.columns([2, 1])
+                with c_table:
+                    st.dataframe(nuc_df, use_container_width=True)
+                with c_pie:
+                    fig_pie = go.Figure(data=[go.Pie(labels=nuc_df["Nucleotide"], values=nuc_df["Total Count"], hole=.3)])
+                    fig_pie.update_layout(template="plotly_dark", height=250, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
                     st.plotly_chart(fig_pie, use_container_width=True)
-                with col_b:
-                    st.write("**Read Length Distribution**")
-                    lens = [len(r) for r in trimmed_reads[:1000]]
-                    fig_hist = go.Figure(data=[go.Histogram(x=lens, marker_color='#00CC96')])
-                    fig_hist.update_layout(template="plotly_dark", height=300)
-                    st.plotly_chart(fig_hist, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader("⚙️ Trimming & Identification Logic")
-                l1, l2 = st.columns(2)
-                with l1:
-                    st.info("**Slicing Logic (QC)**")
-                    st.write("- **Method:** Hard Trimming (5bp Leading/Trailing)")
-                    st.write("- **Threshold:** Discard if post-trim length < 60bp")
-                with l2:
-                    st.success("**Codon Identification (Annotation)**")
-                    st.write("- **Start Tag:** ATG | **Stop Tags:** TAG, TAA, TGA")
-                    st.write("- **Min Length:** 300 bp")
+                
+                # Length Distribution and Bias Profile
+                col_hist, col_logic = st.columns(2)
+                with col_hist:
+                    st.write("**Read Length Distribution**")
+                    lens = [len(r) for r in trimmed_reads[:2000]]
+                    fig_hist = go.Figure(data=[go.Histogram(x=lens, marker_color='#00CC96', nbinsx=30)])
+                    fig_hist.update_layout(template="plotly_dark", height=300, xaxis_title="Length (bp)", yaxis_title="Count")
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                
+                with col_logic:
+                    st.write("**Processing & Trimming Logic**")
+                    st.info("""
+                    - **Hard Trim:** First 5 and last 5 bases removed to reduce error rate.
+                    - **Min Length:** Reads < 60bp discarded to prevent assembly misalignment.
+                    - **Composition:** Checking for GC-bias (G+C content) vs AT-rich regions.
+                    - **Yield:** Percentage of raw data passing quality filters.
+                    """)
 
             with tab2:
-                st.subheader("📈 Assembly & GC Skew Analysis")
+                st.subheader("🏗️ Assembly & Structural Topography")
                 st.latex(r"GC\ Skew = \frac{G - C}{G + C}")
+                
                 window = 500
                 skews, p_skew = [], []
                 for i in range(0, total_len - window, window):
@@ -106,6 +118,7 @@ if uploaded_file:
                     g, c = sub.count('G'), sub.count('C')
                     skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
                     p_skew.append(i)
+                
                 fig_skew = go.Figure()
                 fig_skew.add_trace(go.Scatter(x=p_skew, y=skews, mode='lines', customdata=[round(p/1000, 1) for p in p_skew],
                     hovertemplate="Pos: %{customdata}k<br>Skew: %{y:.4f}<extra></extra>"))
@@ -114,25 +127,25 @@ if uploaded_file:
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
-                st.subheader("🧬 Annotation Comparison")
+                st.subheader("🧬 Functional Annotation")
                 all_raw_orfs = find_all_orfs(full_genome)
                 genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
                 
                 orf_n, gene_n = len(all_raw_orfs), len(genes_df)
                 retention_perc = (gene_n / orf_n * 100) if orf_n > 0 else 0
+                
                 a1, a2, a3 = st.columns(3)
-                a1.metric("Total ORFs (Before)", format_indian_num(orf_n))
-                a2.metric("Validated Genes (After)", format_indian_num(gene_n), f"{retention_perc:.2f}%")
+                a1.metric("Total ORFs", format_indian_num(orf_n))
+                a2.metric("Validated Genes", format_indian_num(gene_n), f"{retention_perc:.2f}%")
                 a3.metric("Reduction Rate", f"{100-retention_perc:.2f}%")
 
                 st.write("---")
-                st.subheader("Continuous Genomic Map")
+                st.subheader("Continuous Genomic Architecture")
                 
                 fig_map = go.Figure()
                 for strand in ["Forward", "Reverse"]:
                     sdf = genes_df[genes_df["Strand"] == strand].copy()
-                    last_end = 0
-                    plot_data = []
+                    last_end, plot_data = 0, []
                     for _, row in sdf.iterrows():
                         if row['Start'] > last_end:
                             plot_data.append({"Start": last_end, "Len": row['Start'] - last_end, "Type": "Non-Coding"})
@@ -142,7 +155,7 @@ if uploaded_file:
                         plot_data.append({"Start": last_end, "Len": total_len - last_end, "Type": "Non-Coding"})
                     
                     pdf = pd.DataFrame(plot_data)
-                    colors = ['#444444' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
+                    colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
                     fig_map.add_trace(go.Bar(
                         x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], 
                         orientation='h', marker=dict(color=colors),
@@ -151,11 +164,10 @@ if uploaded_file:
 
                 fig_map.update_layout(xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
-                
                 st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
 
                 st.write("---")
-                st.subheader("📂 Multi-Format Export Center")
+                st.subheader("📂 Export Results")
                 ex1, ex2, ex3, ex4 = st.columns(4)
                 ex1.download_button("📄 CSV", genes_df.to_csv(index=False), "genes.csv", "text/csv", use_container_width=True)
                 ex2.download_button("💻 JSON", genes_df.to_json(orient="records"), "genes.json", "application/json", use_container_width=True)
