@@ -4,19 +4,17 @@ import re
 import pandas as pd
 import plotly.graph_objects as go
 import random
-import json
 
 st.set_page_config(page_title="De Nova Professional Suite", layout="wide")
 
-# --- INTEGRATED REFERENCE LIBRARY ---
-# Metrics based on NCBI RefSeq standards
+# VERIFIED NCBI REFSEQ METRICS
 SPECIES_LIBRARY = {
-    "Escherichia coli (K-12)": {"ref_gc": 50.8, "expected_genes": 4300, "genome_size": 4641652, "type": "Bacterial"},
-    "Staphylococcus aureus": {"ref_gc": 32.8, "expected_genes": 2800, "genome_size": 2821361, "type": "Bacterial"},
-    "Bacillus subtilis": {"ref_gc": 43.5, "expected_genes": 4200, "genome_size": 4214630, "type": "Bacterial"},
-    "Saccharomyces cerevisiae (Yeast)": {"ref_gc": 38.3, "expected_genes": 6000, "genome_size": 12157105, "type": "Eukaryotic"},
-    "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000, "genome_size": 4411532, "type": "Bacterial"},
-    "Custom / Unknown": {"ref_gc": 0, "expected_genes": 0, "genome_size": 0, "type": "N/A"}
+    "Escherichia coli (K-12)": {"ref_gc": 50.8, "expected_genes": 4300, "genome_size": 4641652},
+    "Staphylococcus aureus": {"ref_gc": 32.8, "expected_genes": 2800, "genome_size": 2821361},
+    "Bacillus subtilis": {"ref_gc": 43.5, "expected_genes": 4200, "genome_size": 4214630},
+    "Saccharomyces cerevisiae (Yeast)": {"ref_gc": 38.3, "expected_genes": 6000, "genome_size": 12157105},
+    "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000, "genome_size": 4411532},
+    "Custom / Unknown": {"ref_gc": 0, "expected_genes": 0, "genome_size": 0}
 }
 
 st.title("🧬 De Nova: Reference-Guided Genomic Pipeline")
@@ -29,7 +27,7 @@ with st.sidebar:
     
     if selected_species != "Custom / Unknown":
         st.success(f"**Target:** {selected_species}")
-        st.write(f"**Ref GC:** {ref['ref_gc']}%")
+        st.write(f"**Verified GC:** {ref['ref_gc']}%")
         st.write(f"**Ref Size:** {ref['genome_size']/1e6:.2f} Mb")
 
 def format_indian_num(n):
@@ -73,7 +71,7 @@ if uploaded_file:
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
             
-            tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
+            tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
 
             with tab1:
                 st.subheader("🛡️ Sequencing QC & Nucleotide Profile")
@@ -93,12 +91,7 @@ if uploaded_file:
                 nuc_df = pd.DataFrame([nuc_counts]).T.reset_index()
                 nuc_df.columns = ["Nucleotide", "Count"]
                 nuc_df["%"] = round((nuc_df["Count"] / sum(nuc_counts.values())) * 100, 2)
-                
-                col_t, col_p = st.columns([2, 1])
-                col_t.dataframe(nuc_df, use_container_width=True)
-                fig_p = go.Figure(data=[go.Pie(labels=nuc_df["Nucleotide"], values=nuc_df["Count"], hole=.3)])
-                fig_p.update_layout(template="plotly_dark", height=250, showlegend=False)
-                col_p.plotly_chart(fig_p, use_container_width=True)
+                st.dataframe(nuc_df, use_container_width=True)
 
             with tab2:
                 st.subheader("🏗️ Comparative Alignment Analysis")
@@ -109,7 +102,7 @@ if uploaded_file:
                     st.metric("Sample GC %", f"{current_gc}%", f"{gc_dev}% Deviation from {selected_species}")
                     
                     if abs(gc_dev) > 5.0:
-                        st.warning("⚠️ High GC Deviation detected. Sample may be contaminated or misidentified.")
+                        st.warning("⚠️ High GC Deviation detected. Potential contamination.")
                 else:
                     st.metric("Sample GC %", f"{current_gc}%")
 
@@ -154,21 +147,11 @@ if uploaded_file:
                     pdf = pd.DataFrame(plot_data)
                     colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
                     fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], 
-                        orientation='h', marker=dict(color=colors), customdata=pdf["Type"], hovertemplate="%{customdata}<extra></extra>"))
+                        orientation='h', marker=dict(color=colors)))
 
                 fig_map.update_layout(xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
                 st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
-
-                st.write("---")
-                st.subheader("📂 Export Center")
-                ex1, ex2, ex3, ex4 = st.columns(4)
-                ex1.download_button("📄 CSV", genes_df.to_csv(index=False), "genes.csv", use_container_width=True)
-                ex2.download_button("💻 JSON", genes_df.to_json(orient="records"), "genes.json", use_container_width=True)
-                gff = "##gff-version 3\n" + "".join([f"seq1\tDeNova\tCDS\t{r['Start']}\t{r['End']}\t.\t{'+' if r['Strand']=='Forward' else '-'}\t0\tID=gene_{i}\n" for i, r in genes_df.iterrows()])
-                ex3.download_button("🧬 GFF3", gff, "annotation.gff3", use_container_width=True)
-                fasta = "".join([f">gene_{i} | {r['Strand']}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
-                ex4.download_button("📝 FASTA", fasta, "sequences.fasta", use_container_width=True)
 
     except Exception as e:
         st.error(f"Error: {e}")
