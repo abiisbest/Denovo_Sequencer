@@ -56,49 +56,82 @@ if uploaded_file:
         sample_seq = "".join(raw_reads[:500])
         sample_gc = round((sample_seq.count('G') + sample_seq.count('C')) / len(sample_seq) * 100, 2)
         
-        # Identification Logic
         closest_species = min(SPECIES_LIBRARY.keys(), key=lambda x: abs(SPECIES_LIBRARY[x]['ref_gc'] - sample_gc))
-        diff = abs(SPECIES_LIBRARY[closest_species]['ref_gc'] - sample_gc)
-        confidence = max(0, 100 - (diff * 10)) # Simple confidence score
-
+        
         st.subheader("🤖 Auto-Identification Result")
-        st.info(f"Sample GC Content: **{sample_gc}%** | Predicted Species: **{closest_species}** | Confidence: **{confidence:.1f}%**")
+        st.info(f"Sample GC Content: **{sample_gc}%** | Predicted Species: **{closest_species}**")
         
         is_correct = st.radio("Confirm Species Identity:", ("Yes, proceed with prediction", "No, let me choose manually"))
-        
-        selected_species = closest_species if is_correct == "Yes, proceed with prediction" else st.selectbox("Select Species", list(SPECIES_LIBRARY.keys()) + ["Custom / Unknown"])
-        ref = SPECIES_LIBRARY.get(selected_species, {"ref_gc": 0, "expected_genes": 0, "genome_size": 0})
+        selected_species = closest_species if is_correct == "Yes, proceed with prediction" else st.selectbox("Select Species", list(SPECIES_LIBRARY.keys()))
+        ref = SPECIES_LIBRARY.get(selected_species)
 
         if st.button("🚀 Run Full Analysis"):
             trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60]
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
+            all_raw_orfs = find_all_orfs(full_genome)
+            genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
             
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Sequencing QC")
+                st.subheader("🛡️ Final Analysis Results & Metadata")
                 raw_n, trim_n = len(raw_reads), len(trimmed_reads)
                 trim_bases = sum(len(r) for r in trimmed_reads)
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Raw Reads", format_indian_num(raw_n))
-                m2.metric("Filtered Reads", format_indian_num(trim_n))
-                m3.metric("Throughput", f"{trim_bases/1e6:.2f} Mb")
                 
-                nuc_counts = {base: sample_seq.count(base) for base in "ACGTN"}
-                st.write("**Nucleotide Distribution**")
-                st.dataframe(pd.DataFrame([nuc_counts], index=["Count"]), use_container_width=True)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Raw Reads", format_indian_num(raw_n))
+                c2.metric("Filtered Reads", format_indian_num(trim_n))
+                c3.metric("Throughput", f"{trim_bases/1e6:.2f} Mb")
+                
+                st.markdown("---")
+                st.write("### 📜 Experimental Summary")
+                
+                results_data = {
+                    "Metric Parameter": [
+                        "Genomic GC Signature", 
+                        "ORF Discovery Yield", 
+                        "Coding Density", 
+                        "Assembly Stability (N50 Placeholder)",
+                        "Ambiguity Rate (N-content)",
+                        "Reference Conformity"
+                    ],
+                    "Observed Result": [
+                        f"{sample_gc}%",
+                        f"{len(genes_df)} features found",
+                        f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%",
+                        f"{int(total_len/2)} bp",
+                        f"{round((full_genome.count('N')/total_len)*100, 4)}%",
+                        f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"
+                    ]
+                }
+                st.table(pd.DataFrame(results_data))
+                
+                st.info("""
+                **Interpretation:** The Coding Density indicates what portion of the assembled sequence consists of active genes. 
+                High Reference Conformity (above 95%) suggests a high-quality match with the selected species profile.
+                """)
 
             with tab2:
-                st.subheader("🏗️ Alignment Metrics")
+                st.subheader("🏗️ Comparative Alignment Analysis")
                 current_gc = round((full_genome.count('G') + full_genome.count('C')) / len(full_genome) * 100, 2)
-                st.metric("Sample GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev")
+                st.metric("Sample GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev from Ref")
+
+                st.markdown("---")
+                window = 500
+                skews, p_skew = [], []
+                for i in range(0, total_len - window, window):
+                    sub = full_genome[i:i+window]
+                    g, c = sub.count('G'), sub.count('C')
+                    skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
+                    p_skew.append(i)
+                fig_skew = go.Figure(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='#00CC96')))
+                fig_skew.update_layout(xaxis=dict(title="Genome Position"), template="plotly_dark", height=300)
+                st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
                 st.subheader("🧬 Functional Annotation")
-                all_raw_orfs = find_all_orfs(full_genome)
-                genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
-                st.metric("Genes Found", len(genes_df), f"{len(genes_df) - ref['expected_genes']} vs Ref")
+                st.metric("Genes Identified", len(genes_df), f"{len(genes_df) - ref['expected_genes']} vs Ref")
                 
                 st.write("---")
                 fig_map = go.Figure()
@@ -113,8 +146,20 @@ if uploaded_file:
                     pdf = pd.DataFrame(plot_data)
                     colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
                     fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], orientation='h', marker=dict(color=colors)))
+                
                 fig_map.update_layout(xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
+                st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
+
+                st.write("---")
+                st.subheader("📂 Multi-Format Export Center")
+                ex1, ex2, ex3, ex4 = st.columns(4)
+                ex1.download_button("📄 Download CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
+                ex2.download_button("💻 Download JSON", genes_df.to_json(orient="records"), "results.json", use_container_width=True)
+                gff = "##gff-version 3\n" + "".join([f"seq1\tDeNova\tCDS\t{r['Start']}\t{r['End']}\t.\t{'+' if r['Strand']=='Forward' else '-'}\t0\tID=gene_{i}\n" for i, r in genes_df.iterrows()])
+                ex3.download_button("🧬 Download GFF3", gff, "annotation.gff3", use_container_width=True)
+                fasta = "".join([f">gene_{i} | {r['Strand']}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
+                ex4.download_button("📝 Download FASTA", fasta, "sequences.fasta", use_container_width=True)
 
     except Exception as e:
         st.error(f"Error: {e}")
