@@ -13,22 +13,11 @@ SPECIES_LIBRARY = {
     "Staphylococcus aureus": {"ref_gc": 32.8, "expected_genes": 2800, "genome_size": 2821361},
     "Bacillus subtilis": {"ref_gc": 43.5, "expected_genes": 4200, "genome_size": 4214630},
     "Saccharomyces cerevisiae (Yeast)": {"ref_gc": 38.3, "expected_genes": 6000, "genome_size": 12157105},
-    "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000, "genome_size": 4411532},
-    "Custom / Unknown": {"ref_gc": 0, "expected_genes": 0, "genome_size": 0}
+    "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000, "genome_size": 4411532}
 }
 
-st.title("🧬 De Nova: Reference-Guided Genomic Pipeline")
+st.title("🧬 De Nova: Auto-Identifying Genomic Pipeline")
 st.markdown("---")
-
-with st.sidebar:
-    st.header("⚙️ Reference Configuration")
-    selected_species = st.selectbox("Choose Target Species", list(SPECIES_LIBRARY.keys()))
-    ref = SPECIES_LIBRARY[selected_species]
-    
-    if selected_species != "Custom / Unknown":
-        st.success(f"**Target:** {selected_species}")
-        st.write(f"**Verified GC:** {ref['ref_gc']}%")
-        st.write(f"**Ref Size:** {ref['genome_size']/1e6:.2f} Mb")
 
 def format_indian_num(n):
     if n >= 100000:
@@ -65,8 +54,29 @@ if uploaded_file:
             data = uploaded_file.read().decode("utf-8")
         
         raw_reads = [line.strip() for line in data.splitlines()[1::4] if line.strip()]
+        sample_seq = "".join(raw_reads[:500])
+        
+        # --- AUTOMATIC IDENTIFICATION LOGIC ---
+        sample_gc = round((sample_seq.count('G') + sample_seq.count('C')) / len(sample_seq) * 100, 2)
+        
+        # Find closest match based on GC content
+        closest_species = min(SPECIES_LIBRARY.keys(), key=lambda x: abs(SPECIES_LIBRARY[x]['ref_gc'] - sample_gc))
+        
+        st.subheader("🤖 Auto-Identification Result")
+        col_id1, col_id2 = st.columns([2, 1])
+        
+        with col_id1:
+            st.info(f"Based on a GC content of **{sample_gc}%**, this sample most closely resembles **{closest_species}**.")
+            is_correct = st.radio("Is this identification correct?", ("Yes, proceed", "No, let me choose manually"))
+        
+        if is_correct == "No, let me choose manually":
+            selected_species = st.selectbox("Select the correct species", list(SPECIES_LIBRARY.keys()) + ["Custom / Unknown"])
+        else:
+            selected_species = closest_species
+            
+        ref = SPECIES_LIBRARY.get(selected_species, {"ref_gc": 0, "expected_genes": 0, "genome_size": 0})
 
-        if st.button("🚀 Run Full Reference Analysis"):
+        if st.button("🚀 Run Full Pipeline"):
             trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60]
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
@@ -86,18 +96,11 @@ if uploaded_file:
                 c4.metric("Avg Read Length", f"{int(trim_bases/trim_n if trim_n > 0 else 0)} bp")
 
                 st.markdown("---")
-                sample_text = "".join(trimmed_reads[:1000])
                 # TRACKING N BASES
-                nuc_counts = {base: sample_text.count(base) for base in "ACGTN"}
+                nuc_counts = {base: sample_seq.count(base) for base in "ACGTN"}
                 nuc_df = pd.DataFrame([nuc_counts]).T.reset_index()
                 nuc_df.columns = ["Nucleotide", "Count"]
                 nuc_df["%"] = round((nuc_df["Count"] / sum(nuc_counts.values())) * 100, 2)
-                
-                # Highlight if N count is too high
-                n_perc = nuc_df[nuc_df["Nucleotide"] == "N"]["%"].values[0]
-                if n_perc > 1.0:
-                    st.warning(f"⚠️ High Ambiguity: {n_perc}% of your nucleotides are 'N'. This may affect gene discovery.")
-                
                 st.dataframe(nuc_df, use_container_width=True)
 
             with tab2:
