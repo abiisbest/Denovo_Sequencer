@@ -52,7 +52,9 @@ if uploaded_file:
         else:
             data = uploaded_file.read().decode("utf-8")
         
-        raw_reads = [line.strip() for line in data.splitlines()[1::4] if line.strip()]
+        raw_lines = data.splitlines()
+        raw_reads = [line.strip() for line in raw_lines[1::4] if line.strip()]
+        
         sample_seq = "".join(raw_reads[:500])
         sample_gc = round((sample_seq.count('G') + sample_seq.count('C')) / len(sample_seq) * 100, 2)
         
@@ -66,7 +68,10 @@ if uploaded_file:
         ref = SPECIES_LIBRARY.get(selected_species)
 
         if st.button("🚀 Run Full Analysis"):
+            raw_len_avg = sum(len(r) for r in raw_reads) / len(raw_reads)
             trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60]
+            trim_len_avg = sum(len(r) for r in trimmed_reads) / len(trimmed_reads)
+            
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
             all_raw_orfs = find_all_orfs(full_genome)
@@ -75,42 +80,40 @@ if uploaded_file:
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Final Analysis Results & Metadata")
-                raw_n, trim_n = len(raw_reads), len(trimmed_reads)
-                trim_bases = sum(len(r) for r in trimmed_reads)
+                st.subheader("🛡️ Trimming & QC Comparison")
+                col_qc1, col_qc2 = st.columns(2)
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Raw Reads", format_indian_num(raw_n))
-                c2.metric("Filtered Reads", format_indian_num(trim_n))
-                c3.metric("Throughput", f"{trim_bases/1e6:.2f} Mb")
-                
+                with col_qc1:
+                    st.write("#### Before Trimming")
+                    st.metric("Total Reads", format_indian_num(len(raw_reads)))
+                    st.metric("Avg Read Length", f"{raw_len_avg:.1f} bp")
+                    st.error("Status: Raw / Noisy")
+
+                with col_qc2:
+                    st.write("#### After Trimming")
+                    st.metric("Total Reads", format_indian_num(len(trimmed_reads)), f"{len(trimmed_reads)-len(raw_reads)}")
+                    st.metric("Avg Read Length", f"{trim_len_avg:.1f} bp", f"{trim_len_avg-raw_len_avg:.1f} bp")
+                    st.success("Status: Cleaned / Filtered")
+
                 st.markdown("---")
-                st.write("### 📜 Experimental Summary")
                 
                 results_data = {
                     "Metric Parameter": [
                         "Genomic GC Signature", 
                         "ORF Discovery Yield", 
                         "Coding Density", 
-                        "Assembly Stability (N50 Placeholder)",
-                        "Ambiguity Rate (N-content)",
+                        "Assembly Stability",
                         "Reference Conformity"
                     ],
                     "Observed Result": [
                         f"{sample_gc}%",
-                        f"{len(genes_df)} features found",
+                        f"{len(genes_df)} features",
                         f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%",
                         f"{int(total_len/2)} bp",
-                        f"{round((full_genome.count('N')/total_len)*100, 4)}%",
                         f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"
                     ]
                 }
                 st.table(pd.DataFrame(results_data))
-                
-                st.info("""
-                **Interpretation:** The Coding Density indicates what portion of the assembled sequence consists of active genes. 
-                High Reference Conformity (above 95%) suggests a high-quality match with the selected species profile.
-                """)
 
             with tab2:
                 st.subheader("🏗️ Comparative Alignment Analysis")
@@ -126,12 +129,15 @@ if uploaded_file:
                     skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
                     p_skew.append(i)
                 fig_skew = go.Figure(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='#00CC96')))
-                fig_skew.update_layout(xaxis=dict(title="Genome Position"), template="plotly_dark", height=300)
+                fig_skew.update_layout(title="GC Skew (Origin of Replication Analysis)", xaxis=dict(title="Genome Position"), template="plotly_dark", height=350)
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
-                st.subheader("🧬 Functional Annotation")
-                st.metric("Genes Identified", len(genes_df), f"{len(genes_df) - ref['expected_genes']} vs Ref")
+                st.subheader("🧬 Annotation Performance")
+                
+                ac1, ac2 = st.columns(2)
+                ac1.metric("Observed Genes", len(genes_df))
+                ac2.metric("Reference Expected", ref['expected_genes'], f"{len(genes_df) - ref['expected_genes']} Delta")
                 
                 st.write("---")
                 fig_map = go.Figure()
@@ -147,11 +153,12 @@ if uploaded_file:
                     colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
                     fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], orientation='h', marker=dict(color=colors)))
                 
-                fig_map.update_layout(xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
+                fig_map.update_layout(title="ORF Mapping (Spatial Distribution)", xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
+                
+                st.markdown("#### Identified Genetic Features")
                 st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
 
-                st.write("---")
                 st.subheader("📂 Multi-Format Export Center")
                 ex1, ex2, ex3, ex4 = st.columns(4)
                 ex1.download_button("📄 Download CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
@@ -162,4 +169,4 @@ if uploaded_file:
                 ex4.download_button("📝 Download FASTA", fasta, "sequences.fasta", use_container_width=True)
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Analysis Error: {e}")
