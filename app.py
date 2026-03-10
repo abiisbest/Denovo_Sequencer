@@ -3,7 +3,7 @@ import gzip
 import re
 import pandas as pd
 import plotly.graph_objects as go
-import random
+import numpy as np
 
 st.set_page_config(page_title="De Nova Professional Suite", layout="wide")
 
@@ -87,31 +87,16 @@ if uploaded_file:
                     st.write("#### Before Trimming")
                     st.metric("Total Reads", format_indian_num(len(raw_reads)))
                     st.metric("Avg Read Length", f"{raw_len_avg:.1f} bp")
-                    st.error("Status: Raw / Noisy")
 
                 with col_qc2:
                     st.write("#### After Trimming")
                     st.metric("Total Reads", format_indian_num(len(trimmed_reads)), f"{len(trimmed_reads)-len(raw_reads)}")
                     st.metric("Avg Read Length", f"{trim_len_avg:.1f} bp", f"{trim_len_avg-raw_len_avg:.1f} bp")
-                    st.success("Status: Cleaned / Filtered")
 
                 st.markdown("---")
-                
                 results_data = {
-                    "Metric Parameter": [
-                        "Genomic GC Signature", 
-                        "ORF Discovery Yield", 
-                        "Coding Density", 
-                        "Assembly Stability",
-                        "Reference Conformity"
-                    ],
-                    "Observed Result": [
-                        f"{sample_gc}%",
-                        f"{len(genes_df)} features",
-                        f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%",
-                        f"{int(total_len/2)} bp",
-                        f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"
-                    ]
+                    "Metric Parameter": ["Genomic GC Signature", "ORF Discovery Yield", "Coding Density", "Assembly Stability", "Reference Conformity"],
+                    "Observed Result": [f"{sample_gc}%", f"{len(genes_df)} features", f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%", f"{int(total_len/2)} bp", f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"]
                 }
                 st.table(pd.DataFrame(results_data))
 
@@ -120,26 +105,33 @@ if uploaded_file:
                 current_gc = round((full_genome.count('G') + full_genome.count('C')) / len(full_genome) * 100, 2)
                 st.metric("Sample GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev from Ref")
 
-                st.markdown("---")
                 window = 500
-                skews, p_skew = [], []
+                p_skew, skews = [], []
                 for i in range(0, total_len - window, window):
                     sub = full_genome[i:i+window]
                     g, c = sub.count('G'), sub.count('C')
                     skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
                     p_skew.append(i)
-                fig_skew = go.Figure(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='#00CC96')))
-                fig_skew.update_layout(title="GC Skew (Origin of Replication Analysis)", xaxis=dict(title="Genome Position"), template="plotly_dark", height=350)
+
+                fig_skew = go.Figure()
+                skews_np = np.array(skews)
+                pos_skew = np.where(skews_np >= 0, skews_np, 0)
+                neg_skew = np.where(skews_np < 0, skews_np, 0)
+
+                fig_skew.add_trace(go.Scatter(x=p_skew, y=pos_skew, fill='tozeroy', mode='lines', line=dict(color='#00CC96', width=0), name='Positive Skew (G > C)'))
+                fig_skew.add_trace(go.Scatter(x=p_skew, y=neg_skew, fill='tozeroy', mode='lines', line=dict(color='#EF553B', width=0), name='Negative Skew (C > G)'))
+                fig_skew.add_trace(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='white', width=1), showlegend=False))
+                
+                fig_skew.add_shape(type="line", x0=0, y0=0, x1=max(p_skew), y1=0, line=dict(color="gray", width=2, dash="dash"))
+                fig_skew.update_layout(title="Bicolor GC Skew Analysis", xaxis=dict(title="Genome Position"), yaxis=dict(title="Skew Value"), template="plotly_dark", height=400)
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
                 st.subheader("🧬 Annotation Performance")
-                
                 ac1, ac2 = st.columns(2)
                 ac1.metric("Observed Genes", len(genes_df))
                 ac2.metric("Reference Expected", ref['expected_genes'], f"{len(genes_df) - ref['expected_genes']} Delta")
                 
-                st.write("---")
                 fig_map = go.Figure()
                 for strand in ["Forward", "Reverse"]:
                     sdf = genes_df[genes_df["Strand"] == strand].copy()
@@ -153,20 +145,18 @@ if uploaded_file:
                     colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
                     fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], orientation='h', marker=dict(color=colors)))
                 
-                fig_map.update_layout(title="ORF Mapping (Spatial Distribution)", xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
+                fig_map.update_layout(title="ORF Mapping", xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
                 st.plotly_chart(fig_map, use_container_width=True)
-                
-                st.markdown("#### Identified Genetic Features")
                 st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
 
-                st.subheader("📂 Multi-Format Export Center")
+                st.subheader("📂 Export Center")
                 ex1, ex2, ex3, ex4 = st.columns(4)
-                ex1.download_button("📄 Download CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
-                ex2.download_button("💻 Download JSON", genes_df.to_json(orient="records"), "results.json", use_container_width=True)
+                ex1.download_button("📄 CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
+                ex2.download_button("💻 JSON", genes_df.to_json(orient="records"), "results.json", use_container_width=True)
                 gff = "##gff-version 3\n" + "".join([f"seq1\tDeNova\tCDS\t{r['Start']}\t{r['End']}\t.\t{'+' if r['Strand']=='Forward' else '-'}\t0\tID=gene_{i}\n" for i, r in genes_df.iterrows()])
-                ex3.download_button("🧬 Download GFF3", gff, "annotation.gff3", use_container_width=True)
-                fasta = "".join([f">gene_{i} | {r['Strand']}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
-                ex4.download_button("📝 Download FASTA", fasta, "sequences.fasta", use_container_width=True)
+                ex3.download_button("🧬 GFF3", gff, "annotation.gff3", use_container_width=True)
+                fasta = "".join([f">gene_{i}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
+                ex4.download_button("📝 FASTA", fasta, "sequences.fasta", use_container_width=True)
 
     except Exception as e:
         st.error(f"Analysis Error: {e}")
