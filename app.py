@@ -45,7 +45,7 @@ def find_all_orfs(sequence, min_len=300):
 
 st.sidebar.header("⚙️ Pipeline Settings")
 trim_adapters = st.sidebar.checkbox("Enable Adapter Trimming", value=True)
-trim_length = st.sidebar.slider("Adapter Trim Length (bp)", 0, 20, 5)
+trim_length = st.sidebar.slider("Adapter Trim Length (bp)", 0, 30, 5)
 
 uploaded_file = st.file_uploader("Upload Raw FASTQ/GZ Data", type=["fastq", "fq", "gz"])
 
@@ -59,9 +59,12 @@ if uploaded_file:
         raw_lines = data.splitlines()
         raw_reads = [line.strip() for line in raw_lines[1::4] if line.strip()]
         
+        if not raw_reads:
+            st.error("No valid DNA reads found in file.")
+            st.stop()
+
         sample_seq = "".join(raw_reads[:500])
         sample_gc = round((sample_seq.count('G') + sample_seq.count('C')) / len(sample_seq) * 100, 2)
-        
         closest_species = min(SPECIES_LIBRARY.keys(), key=lambda x: abs(SPECIES_LIBRARY[x]['ref_gc'] - sample_gc))
         
         st.subheader("🤖 Auto-Identification Result")
@@ -79,42 +82,51 @@ if uploaded_file:
             else:
                 trimmed_reads = [r for r in raw_reads if len(r) > 60]
                 
+            if not trimmed_reads:
+                st.warning("Trimming settings removed all reads. Please adjust length filters.")
+                st.stop()
+
             trim_len_avg = sum(len(r) for r in trimmed_reads) / len(trimmed_reads)
-            
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
             total_len = len(full_genome)
+            
             all_raw_orfs = find_all_orfs(full_genome)
-            genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
+            
+            if all_raw_orfs:
+                genes_df = pd.DataFrame(all_raw_orfs).sort_values('Start').drop_duplicates(subset=['Start'], keep='first')
+            else:
+                genes_df = pd.DataFrame(columns=["Strand", "Start", "End", "Length", "GC %", "Sequence", "Type"])
             
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
 
             with tab1:
                 st.subheader("🛡️ Trimming & QC Comparison")
                 col_qc1, col_qc2 = st.columns(2)
-                
                 with col_qc1:
                     st.write("#### Before Trimming")
                     st.metric("Total Reads", format_indian_num(len(raw_reads)))
                     st.metric("Avg Read Length", f"{raw_len_avg:.1f} bp")
-
                 with col_qc2:
                     st.write("#### After Trimming")
-                    status = "Cleaned" if trim_adapters else "Raw"
                     st.metric("Total Reads", format_indian_num(len(trimmed_reads)), f"{len(trimmed_reads)-len(raw_reads)}")
                     st.metric("Avg Read Length", f"{trim_len_avg:.1f} bp", f"{trim_len_avg-raw_len_avg:.1f} bp")
-                    st.caption(f"Trimming Status: {status} (Trimmed {trim_length} bp from ends)")
 
                 st.markdown("---")
                 results_data = {
-                    "Metric Parameter": ["Genomic GC Signature", "ORF Discovery Yield", "Coding Density", "Assembly Stability", "Reference Conformity"],
-                    "Observed Result": [f"{sample_gc}%", f"{len(genes_df)} features", f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%", f"{int(total_len/2)} bp", f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"]
+                    "Metric Parameter": ["Genomic GC Signature", "ORF Discovery Yield", "Coding Density", "Reference Conformity"],
+                    "Observed Result": [
+                        f"{sample_gc}%", 
+                        f"{len(genes_df)} features", 
+                        f"{round((genes_df['Length'].sum()/total_len)*100, 2) if not genes_df.empty else 0}%", 
+                        f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"
+                    ]
                 }
                 st.table(pd.DataFrame(results_data))
 
             with tab2:
-                st.subheader("🏗️ Comparative Alignment Analysis")
-                current_gc = round((full_genome.count('G') + full_genome.count('C')) / len(full_genome) * 100, 2)
-                st.metric("Sample GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev from Ref")
+                st.subheader("🏗️ Structural Landmark Analysis")
+                current_gc = round((full_genome.count('G') + full_genome.count('C')) / (len(full_genome) - full_genome.count('N')) * 100, 2)
+                st.metric("Genome GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev")
 
                 window = 500
                 p_skew, skews = [], []
@@ -131,43 +143,45 @@ if uploaded_file:
 
                 fig_skew.add_trace(go.Scatter(x=p_skew, y=pos_skew, fill='tozeroy', mode='lines', line=dict(color='#00CC96', width=0), name='Positive Skew (G > C)'))
                 fig_skew.add_trace(go.Scatter(x=p_skew, y=neg_skew, fill='tozeroy', mode='lines', line=dict(color='#EF553B', width=0), name='Negative Skew (C > G)'))
-                fig_skew.add_trace(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='white', width=1), showlegend=False))
-                
+                fig_skew.add_trace(go.Scatter(x=p_skew, y=skews, mode='lines', line=dict(color='white', width=1.5), showlegend=False))
                 fig_skew.add_shape(type="line", x0=0, y0=0, x1=max(p_skew), y1=0, line=dict(color="gray", width=2, dash="dash"))
-                fig_skew.update_layout(title="Bicolor GC Skew Analysis", xaxis=dict(title="Genome Position"), yaxis=dict(title="Skew Value"), template="plotly_dark", height=400)
+                fig_skew.update_layout(title="GC Skew (OriC Identification)", xaxis=dict(title="Position"), yaxis=dict(title="Skew"), template="plotly_dark")
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
-                st.subheader("🧬 Annotation Performance")
-                ac1, ac2 = st.columns(2)
-                ac1.metric("Observed Genes", len(genes_df))
-                ac2.metric("Reference Expected", ref['expected_genes'], f"{len(genes_df) - ref['expected_genes']} Delta")
-                
-                fig_map = go.Figure()
-                for strand in ["Forward", "Reverse"]:
-                    sdf = genes_df[genes_df["Strand"] == strand].copy()
-                    last_end, plot_data = 0, []
-                    for _, row in sdf.iterrows():
-                        if row['Start'] > last_end:
-                            plot_data.append({"Start": last_end, "Len": row['Start'] - last_end, "Type": "Non-Coding"})
-                        plot_data.append({"Start": row['Start'], "Len": row['Length'], "Type": "Gene"})
-                        last_end = row['End']
-                    pdf = pd.DataFrame(plot_data)
-                    colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
-                    fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], orientation='h', marker=dict(color=colors)))
-                
-                fig_map.update_layout(title="ORF Mapping", xaxis=dict(title="Position (bp)"), barmode='stack', template="plotly_dark", height=300, showlegend=False)
-                st.plotly_chart(fig_map, use_container_width=True)
-                st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
+                st.subheader("🧬 Functional Annotation")
+                if genes_df.empty:
+                    st.warning("No Open Reading Frames detected. Try adjusting trimming or uploading a larger file.")
+                else:
+                    ac1, ac2 = st.columns(2)
+                    ac1.metric("Observed Genes", len(genes_df))
+                    ac2.metric("Ref. Expected", ref['expected_genes'], f"{len(genes_df) - ref['expected_genes']} Delta")
+                    
+                    fig_map = go.Figure()
+                    for strand in ["Forward", "Reverse"]:
+                        sdf = genes_df[genes_df["Strand"] == strand].copy()
+                        last_end, plot_data = 0, []
+                        for _, row in sdf.iterrows():
+                            if row['Start'] > last_end:
+                                plot_data.append({"Start": last_end, "Len": row['Start'] - last_end, "Type": "Non-Coding"})
+                            plot_data.append({"Start": row['Start'], "Len": row['Length'], "Type": "Gene"})
+                            last_end = row['End']
+                        pdf = pd.DataFrame(plot_data)
+                        colors = ['#333333' if t == "Non-Coding" else '#00CC96' for t in pdf['Type']]
+                        fig_map.add_trace(go.Bar(x=pdf["Len"], y=[strand]*len(pdf), base=pdf["Start"], orientation='h', marker=dict(color=colors)))
+                    
+                    fig_map.update_layout(title="ORF Mapping", barmode='stack', template="plotly_dark", height=300, showlegend=False)
+                    st.plotly_chart(fig_map, use_container_width=True)
+                    st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
 
-                st.subheader("📂 Export Center")
-                ex1, ex2, ex3, ex4 = st.columns(4)
-                ex1.download_button("📄 CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
-                ex2.download_button("💻 JSON", genes_df.to_json(orient="records"), "results.json", use_container_width=True)
-                gff = "##gff-version 3\n" + "".join([f"seq1\tDeNova\tCDS\t{r['Start']}\t{r['End']}\t.\t{'+' if r['Strand']=='Forward' else '-'}\t0\tID=gene_{i}\n" for i, r in genes_df.iterrows()])
-                ex3.download_button("🧬 GFF3", gff, "annotation.gff3", use_container_width=True)
-                fasta = "".join([f">gene_{i}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
-                ex4.download_button("📝 FASTA", fasta, "sequences.fasta", use_container_width=True)
+                    st.subheader("📂 Export Center")
+                    ex1, ex2, ex3, ex4 = st.columns(4)
+                    ex1.download_button("📄 CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
+                    ex2.download_button("💻 JSON", genes_df.to_json(orient="records"), "results.json", use_container_width=True)
+                    gff = "##gff-version 3\n" + "".join([f"seq1\tDeNova\tCDS\t{r['Start']}\t{r['End']}\t.\t{'+' if r['Strand']=='Forward' else '-'}\t0\tID=gene_{i}\n" for i, r in genes_df.iterrows()])
+                    ex3.download_button("🧬 GFF3", gff, "annotation.gff3", use_container_width=True)
+                    fasta = "".join([f">gene_{i}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
+                    ex4.download_button("📝 FASTA", fasta, "sequences.fasta", use_container_width=True)
 
     except Exception as e:
-        st.error(f"Analysis Error: {e}")
+        st.error(f"System Error: {e}")
