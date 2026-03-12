@@ -45,41 +45,43 @@ def find_all_orfs(sequence, min_len=300):
     return found_genes
 
 def parse_genomic_file(uploaded_file):
-    filename = uploaded_file.name
-    if filename.endswith('.gz'):
+    name = uploaded_file.name.lower()
+    if name.endswith('.gz'):
         content = gzip.decompress(uploaded_file.read()).decode("utf-8")
     else:
         content = uploaded_file.read().decode("utf-8")
     
     lines = content.splitlines()
-    reads = []
-    
-    if filename.endswith(('.fastq', '.fq', '.fastq.gz', '.fq.gz')):
-        reads = [line.strip() for line in lines[1::4] if line.strip()]
-    elif filename.endswith(('.fasta', '.fa', '.fna', '.fasta.gz', '.fa.gz', '.fna.gz')):
+    sequences = []
+
+    if any(name.endswith(ext) for ext in [".fasta", ".fa", ".fna"]):
         current_seq = []
         for line in lines:
             if line.startswith(">"):
                 if current_seq:
-                    reads.append("".join(current_seq))
+                    sequences.append("".join(current_seq))
                 current_seq = []
             else:
                 current_seq.append(line.strip())
         if current_seq:
-            reads.append("".join(current_seq))
+            sequences.append("".join(current_seq))
+            
+    elif any(name.endswith(ext) for ext in [".fastq", ".fq"]):
+        sequences = [line.strip() for line in lines[1::4] if line.strip()]
+    
     else:
-        reads = [line.strip() for line in lines if line.strip() and not line.startswith(('@', '>', '+'))]
+        sequences = [line.strip() for line in lines if line.strip() and not line.startswith(('@', '>', '+'))]
         
-    return reads
+    return sequences
 
-uploaded_file = st.file_uploader("Upload Genomic Data (FASTA, FASTQ, GZ)", type=["fastq", "fq", "fasta", "fa", "fna", "gz"])
+uploaded_file = st.file_uploader("Upload Genomic Data", type=["fastq", "fq", "fasta", "fa", "fna", "gz"])
 
 if uploaded_file:
     try:
         raw_reads = parse_genomic_file(uploaded_file)
         
         if not raw_reads:
-            st.error("No valid sequences found in the file.")
+            st.error("No valid sequences detected.")
             st.stop()
 
         sample_seq = "".join(raw_reads[:500])
@@ -96,7 +98,9 @@ if uploaded_file:
 
         if st.button("🚀 Run Full Analysis"):
             raw_len_avg = sum(len(r) for r in raw_reads) / len(raw_reads)
-            trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60] if "fastq" in uploaded_file.name else raw_reads
+            
+            is_fastq = any(uploaded_file.name.lower().endswith(ext) for ext in [".fastq", ".fq", ".fastq.gz", ".fq.gz"])
+            trimmed_reads = [r[5:-5] for r in raw_reads if len(r) > 60] if is_fastq else raw_reads
             trim_len_avg = sum(len(r) for r in trimmed_reads) / len(trimmed_reads)
             
             full_genome = "NNNNN".join(trimmed_reads[:200]) 
@@ -107,18 +111,18 @@ if uploaded_file:
             tab1, tab2, tab3 = st.tabs(["📊 Sequencing QC Report", "🏗️ Reference Alignment", "🧬 Functional Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Data Statistics")
+                st.subheader("🛡️ File Statistics")
                 col_qc1, col_qc2 = st.columns(2)
                 with col_qc1:
-                    st.metric("Total Contigs/Reads", format_indian_num(len(raw_reads)))
-                    st.metric("Avg Length", f"{raw_len_avg:.1f} bp")
+                    st.metric("Total Sequences", format_indian_num(len(raw_reads)))
+                    st.metric("Avg Read Length", f"{raw_len_avg:.1f} bp")
                 with col_qc2:
-                    st.metric("Total Bases Processed", format_indian_num(sum(len(r) for r in trimmed_reads)))
-                    st.metric("Max Sequence Length", f"{max(len(r) for r in raw_reads):,} bp")
+                    st.metric("Processed Length", f"{trim_len_avg:.1f} bp")
+                    st.metric("Coding Density", f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%")
 
                 results_data = {
-                    "Metric Parameter": ["Genomic GC Signature", "ORF Discovery Yield", "Coding Density", "Reference Conformity"],
-                    "Observed Result": [f"{sample_gc}%", f"{len(genes_df)} features", f"{round((genes_df['Length'].sum()/total_len)*100, 2)}%", f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"]
+                    "Metric Parameter": ["Genomic GC Signature", "ORF Discovery Yield", "Assembly Stability", "Reference Conformity"],
+                    "Observed Result": [f"{sample_gc}%", f"{len(genes_df)} features", f"{int(total_len/2)} bp", f"{round(100 - abs(sample_gc - ref['ref_gc']), 2)}%"]
                 }
                 st.table(pd.DataFrame(results_data))
 
@@ -127,7 +131,7 @@ if uploaded_file:
                 current_gc = round((full_genome.count('G') + full_genome.count('C')) / len(full_genome) * 100, 2)
                 st.metric("Sample GC %", f"{current_gc}%", f"{current_gc - ref['ref_gc']:.2f}% Dev from Ref")
 
-                window = max(100, total_len // 100)
+                window = max(100, total_len // 50)
                 p_skew, skews = [], []
                 for i in range(0, total_len - window, window):
                     sub = full_genome[i:i+window]
@@ -146,8 +150,10 @@ if uploaded_file:
                 st.subheader("🧬 Annotation Performance")
                 st.dataframe(genes_df.drop(columns=['Sequence', 'Type']), use_container_width=True)
                 
+                ex1, ex2 = st.columns(2)
                 fasta_out = "".join([f">gene_{i}\n{r['Sequence']}\n" for i, r in genes_df.iterrows()])
-                st.download_button("📝 Download FASTA Proteins", fasta_out, "predicted_genes.fasta")
+                ex1.download_button("📝 Download FASTA", fasta_out, "predicted_genes.fasta", use_container_width=True)
+                ex2.download_button("📄 Download CSV", genes_df.to_csv(index=False), "results.csv", use_container_width=True)
 
     except Exception as e:
         st.error(f"Analysis Error: {e}")
