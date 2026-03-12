@@ -16,7 +16,7 @@ SPECIES_LIBRARY = {
     "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000, "genome_size": 4411532}
 }
 
-st.title("🧬 De Novo: Auto-Identifying Genomic Pipeline")
+st.title("🧬 De Novo: Auto-Identifying Genomic Pipelin")
 st.markdown("---")
 
 def format_indian_num(n):
