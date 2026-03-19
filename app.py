@@ -23,7 +23,6 @@ def get_rev_complement(seq):
 
 def find_all_orfs(sequence, min_len=300):
     found_genes = []
-    # Regex ensures triplets and looks for Start (ATG) to Stop (TAG|TAA|TGA)
     pattern = re.compile(r'(ATG(?:...){%d,1000}?(?:TAG|TAA|TGA))' % (min_len // 3))
     
     for strand in ["Forward", "Reverse"]:
@@ -44,41 +43,51 @@ def find_all_orfs(sequence, min_len=300):
 
 # --- 3. SIDEBAR SETTINGS ---
 st.sidebar.header("⚙️ Pipeline Parameters")
-read_count = st.sidebar.slider("Number of Reads to Assemble", 100, 2000, 500)
+read_count = st.sidebar.slider("Sequences/Reads to Process", 1, 2000, 500)
 min_orf_len = st.sidebar.slider("Minimum ORF Length (bp)", 100, 1000, 300)
 
 st.sidebar.subheader("🛡️ QC Settings")
-trim_adapters = st.sidebar.checkbox("Enable Adapter Trimming", value=True)
+trim_adapters = st.sidebar.checkbox("Enable End Trimming", value=True)
 trim_len = st.sidebar.slider("Trim from ends (bp)", 0, 30, 5)
 
 # --- 4. DATA UPLOAD & INITIAL ID ---
 st.title("🧬 De Novo: Auto-Identifying Genomic Suite")
 st.markdown("---")
 
-uploaded_file = st.file_uploader("Upload Raw FASTQ/GZ Data", type=["fastq", "fq", "gz"])
+uploaded_file = st.file_uploader("Upload Raw Data (FASTQ, FASTA, or GZ)", type=["fastq", "fq", "fasta", "fa", "gz"])
 
 if uploaded_file:
     try:
         # Decompression handling
         if uploaded_file.name.endswith('.gz'):
-            data = gzip.decompress(uploaded_file.read()).decode("utf-8")
+            content = gzip.decompress(uploaded_file.read()).decode("utf-8")
         else:
-            data = uploaded_file.read().decode("utf-8")
+            content = uploaded_file.read().decode("utf-8")
         
-        raw_lines = data.splitlines()
-        raw_reads = [line.strip() for line in raw_lines[1::4] if line.strip()]
+        lines = content.splitlines()
         
-        if not raw_reads:
-            st.error("Invalid file format. Ensure it is a standard 4-line FASTQ.")
+        # Format Detection
+        is_fasta = any(line.startswith('>') for line in lines[:5])
+        
+        if is_fasta:
+            # FASTA logic: take lines that don't start with '>'
+            raw_sequences = [line.strip() for line in lines if line.strip() and not line.startswith('>')]
+        else:
+            # FASTQ logic: take every 2nd line in 4line blocks
+            raw_sequences = [line.strip() for line in lines[1::4] if line.strip()]
+        
+        if not raw_sequences:
+            st.error("No valid sequences found in file.")
             st.stop()
 
         # Quick Species Prediction
-        sample_seq_id = "".join(raw_reads[:100])
+        sample_seq_id = "".join(raw_sequences[:50])
         sample_gc = round((sample_seq_id.count('G') + sample_seq_id.count('C')) / len(sample_seq_id) * 100, 2)
         closest_species = min(SPECIES_LIBRARY.keys(), key=lambda x: abs(SPECIES_LIBRARY[x]['ref_gc'] - sample_gc))
         
         st.subheader("🤖 Auto-Identification")
-        st.info(f"Sample GC: **{sample_gc}%** | Closest Reference: **{closest_species}**")
+        st.info(f"Detected Format: **{'FASTA' if is_fasta else 'FASTQ'}** | Sample GC: **{sample_gc}%**")
+        st.success(f"Predicted Species: **{closest_species}**")
         
         is_correct = st.radio("Confirm Identity:", ("Proceed with Prediction", "Select Manually"))
         target_species = closest_species if is_correct == "Proceed with Prediction" else st.selectbox("Choose Species", list(SPECIES_LIBRARY.keys()))
@@ -86,14 +95,14 @@ if uploaded_file:
 
         # --- 5. EXECUTION ENGINE ---
         if st.button("🚀 Run Analysis Pipeline"):
-            # Trimming & Cleaning
+            # Trimming
             if trim_adapters:
-                trimmed = [r[trim_len:-trim_len] for r in raw_reads if len(r) > (60 + 2*trim_len)]
+                processed = [s[trim_len:-trim_len] for s in raw_sequences if len(s) > (min_orf_len + 2*trim_len)]
             else:
-                trimmed = [r for r in raw_reads if len(r) > 60]
+                processed = [s for s in raw_sequences if len(s) > min_orf_len]
             
-            # Scaffolding (Pseudo-Assembly)
-            full_genome = "NNNNN".join(trimmed[:read_count])
+            # Assembly/Scaffolding
+            full_genome = "NNNNN".join(processed[:read_count])
             total_len = len(full_genome)
             
             # Annotation
@@ -103,26 +112,28 @@ if uploaded_file:
                 genes_df = genes_df.sort_values('Start').drop_duplicates(subset=['Start'])
 
             # --- 6. TABS & VISUALIZATION ---
-            tab1, tab2, tab3 = st.tabs(["📊 QC Report", "🏗️ Structural Map", "🧬 Circular Annotation"])
+            tab1, tab2, tab3 = st.tabs(["📊 Data Report", "🏗️ Structural Map", "🧬 Circular Annotation"])
 
             with tab1:
-                st.subheader("🛡️ Trimming & QC Performance")
+                st.subheader("🛡️ Sequence Quality & Metrics")
                 c1, c2 = st.columns(2)
-                c1.metric("Raw Reads", f"{len(raw_reads)}")
-                c2.metric("Cleaned Reads", f"{len(trimmed)}", f"{len(trimmed)-len(raw_reads)}")
+                c1.metric("Input Sequences", f"{len(raw_sequences)}")
+                c2.metric("Valid Sequences", f"{len(processed)}", f"{len(processed)-len(raw_sequences)}")
                 
                 res_table = {
-                    "Metric": ["GC Content", "Found ORFs", "Coding Density", "Ref Conformity"],
-                    "Value": [f"{sample_gc}%", f"{len(genes_df)}", f"{round((genes_df['Length'].sum()/total_len)*100,1)}%", f"{round(100-abs(sample_gc-ref['ref_gc']),1)}%"]
+                    "Metric": ["Format Detected", "GC Content", "Found ORFs", "Coding Density"],
+                    "Value": ["FASTA" if is_fasta else "FASTQ", f"{sample_gc}%", f"{len(genes_df)}", f"{round((genes_df['Length'].sum()/total_len)*100,1) if not genes_df.empty else 0}%"]
                 }
                 st.table(pd.DataFrame(res_table))
 
             with tab2:
-                st.subheader("🏗️ Bicolor GC Skew (OriC Search)")
+                st.subheader("🏗️ Bicolor GC Skew Analysis")
                 window = 500
                 p_skew, skews = [], []
-                for i in range(0, total_len - window, window):
-                    sub = full_genome[i:i+window]
+                # Remove Ns for skew calculation to avoid bias
+                clean_genome = full_genome.replace("N", "")
+                for i in range(0, len(clean_genome) - window, window):
+                    sub = clean_genome[i:i+window]
                     g, c = sub.count('G'), sub.count('C')
                     skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
                     p_skew.append(i)
@@ -131,15 +142,14 @@ if uploaded_file:
                 skews_np = np.array(skews)
                 fig_skew.add_trace(go.Scatter(x=p_skew, y=np.where(skews_np >= 0, skews_np, 0), fill='tozeroy', line_color='#00CC96', name='G > C'))
                 fig_skew.add_trace(go.Scatter(x=p_skew, y=np.where(skews_np < 0, skews_np, 0), fill='tozeroy', line_color='#EF553B', name='C > G'))
-                fig_skew.update_layout(template="plotly_dark", height=400, xaxis_title="Position", yaxis_title="Skew")
+                fig_skew.update_layout(template="plotly_dark", height=400, xaxis_title="Effective Genome Position", yaxis_title="Skew")
                 st.plotly_chart(fig_skew, use_container_width=True)
 
             with tab3:
                 st.subheader("🧬 Circular Genome Visualization")
                 if genes_df.empty:
-                    st.warning("No genes detected with current settings.")
+                    st.warning("No genes detected. Check trimming settings or ORF length.")
                 else:
-                    # Circular Math
                     genes_df['S_Angle'] = (genes_df['Start'] / total_len) * 360
                     genes_df['E_Angle'] = (genes_df['End'] / total_len) * 360
                     
@@ -150,7 +160,7 @@ if uploaded_file:
                         fig_circ.add_trace(go.Barpolar(
                             r=[0.4], theta=[(row['S_Angle'] + row['E_Angle']) / 2],
                             width=[row['E_Angle'] - row['S_Angle']], base=r_track,
-                            marker_color=clr, hovertext=f"Gene @ {row['Start']}bp"
+                            marker_color=clr, hovertext=f"Gene: {row['Length']}bp"
                         ))
                     
                     fig_circ.update_layout(template="plotly_dark", polar=dict(hole=0.4, radialaxis=dict(showticklabels=False, range=[0, 3])), height=600)
@@ -159,7 +169,6 @@ if uploaded_file:
                     st.subheader("🔍 Quick-Copy for BLAST")
                     longest = genes_df.sort_values('Length', ascending=False).iloc[0]
                     st.text_area("Longest Gene Sequence:", value=longest['Sequence'], height=100)
-                    
                     st.dataframe(genes_df.drop(columns=['Sequence']), use_container_width=True)
 
     except Exception as e:
