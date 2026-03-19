@@ -34,20 +34,23 @@ def find_all_orfs(sequence, min_len=300, allow_partial=True):
                     "Sequence": gene_seq
                 })
     
-    # Filter Overlaps (Keeping only the most significant ORF per locus)
+    # Filter Overlaps (Keeping only the most significant ORF per locus to avoid clutter)
     sorted_genes = sorted(found_genes, key=lambda x: x['Length'], reverse=True)
     final_genes, covered = [], []
     for g in sorted_genes:
         if not any(max(g['Start'], s) < min(g['End'], e) for s, e in covered):
             final_genes.append(g)
             covered.append((g['Start'], g['End']))
+    
+    # Return sorted by original genomic position
     return sorted(final_genes, key=lambda x: x['Start'])
 
 # --- 3. UI SIDEBAR ---
 st.sidebar.header("⚙️ Pipeline Settings")
 min_orf_len = st.sidebar.slider("Minimum ORF Length (bp)", 50, 1000, 300)
 allow_partial = st.sidebar.checkbox("Allow Partial Genes", value=True)
-map_style = st.sidebar.selectbox("Map Style", ["Real-Coordinates (with gaps)", "Stitched (no gaps)"])
+# Added toggle for Gapless mode
+map_style = st.sidebar.radio("Map Style:", ("Gapless (Stitched)", "Real-Coordinates (With Gaps)"))
 
 # --- 4. PROCESSING ---
 st.title("🧬 De Novo: Professional Genomic Suite")
@@ -77,27 +80,46 @@ if uploaded_file:
 
             with t2:
                 if df.empty:
-                    st.warning("No genes found. Decrease minimum length.")
+                    st.warning("No genes found. Try decreasing the Minimum ORF Length.")
                 else:
                     fig = go.Figure()
                     for strand in ["Forward", "Reverse"]:
                         sdf = df[df["Strand"] == strand].copy()
                         clr = "#00CC96" if strand == "Forward" else "#EF553B"
                         
-                        if map_style == "Stitched (no gaps)":
-                            # Use cumulative length to remove gaps
+                        if map_style == "Gapless (Stitched)":
+                            # Remove gaps by calculating cumulative length per strand
                             lengths = sdf["Length"].tolist()
-                            bases = [sum(lengths[:i]) for i in range(len(lengths))]
-                            fig.add_trace(go.Bar(x=lengths, y=[strand]*len(sdf), base=bases, 
-                                                 orientation='h', marker_color=clr, name=strand,
-                                                 hovertext=[f"Orig Start: {s}" for s in sdf["Start"]]))
+                            # Cumulative sum starting at 0
+                            cumulative_bases = [0] + list(np.cumsum(lengths))[:-1]
+                            
+                            fig.add_trace(go.Bar(
+                                x=lengths, 
+                                y=[strand]*len(sdf), 
+                                base=cumulative_bases, 
+                                orientation='h', 
+                                marker_color=clr, 
+                                name=strand,
+                                hovertext=[f"Original Position: {s}bp" for s in sdf["Start"]]
+                            ))
                         else:
-                            # Use real coordinates
-                            fig.add_trace(go.Bar(x=sdf["Length"], y=[strand]*len(sdf), base=sdf["Start"], 
-                                                 orientation='h', marker_color=clr, name=strand))
+                            # Original behavior with genomic gaps
+                            fig.add_trace(go.Bar(
+                                x=sdf["Length"], 
+                                y=[strand]*len(sdf), 
+                                base=sdf["Start"], 
+                                orientation='h', 
+                                marker_color=clr, 
+                                name=strand
+                            ))
 
-                    fig.update_layout(template="plotly_dark", barmode='overlay', height=400, 
-                                      xaxis_title="Position (bp)" if map_style == "Real-Coordinates (with gaps)" else "Cumulative Coding bp")
+                    fig.update_layout(
+                        template="plotly_dark", 
+                        barmode='overlay', # Overlay allows Forward/Reverse to sit tightly
+                        height=400, 
+                        xaxis_title="Coding Position (bp)" if map_style == "Gapless (Stitched)" else "Genomic Position (bp)",
+                        yaxis=dict(categoryorder='array', categoryarray=['Forward', 'Reverse'])
+                    )
                     st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
