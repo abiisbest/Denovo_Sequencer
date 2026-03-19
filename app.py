@@ -5,32 +5,39 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 
-# --- 1. CONFIGURATION & DATABASE ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="De Novo: Genomic Suite", layout="wide")
 
 SPECIES_LIBRARY = {
     "Escherichia coli (K-12)": {"ref_gc": 50.8, "expected_genes": 4300},
     "Staphylococcus aureus": {"ref_gc": 32.8, "expected_genes": 2800},
-    "Bacillus subtilis": {"ref_gc": 43.5, "expected_genes": 4200},
-    "Saccharomyces cerevisiae (Yeast)": {"ref_gc": 38.3, "expected_genes": 6000},
-    "Mycobacterium tuberculosis": {"ref_gc": 65.6, "expected_genes": 4000}
+    "Homo sapiens (Partial Fragment)": {"ref_gc": 41.0, "expected_genes": 20000}
 }
 
-# --- 2. CORE BIOLOGICAL FUNCTIONS ---
+# --- 2. BIOLOGICAL ENGINE ---
 def get_rev_complement(seq):
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
     return "".join(complement.get(base, base) for base in reversed(seq))
 
-def find_all_orfs(sequence, min_len=300):
+def find_all_orfs(sequence, min_len=150, allow_partial=True):
     found_genes = []
-    # Regex: Look for ATG, then triplets, then Stop (TAG|TAA|TGA)
-    pattern = re.compile(r'(ATG(?:...){%d,5000}?(?:TAG|TAA|TGA))' % (min_len // 3))
+    # Logic: Start with ATG, follow triplets, end with Stop OR the end of the string ($)
+    if allow_partial:
+        pattern = re.compile(r'(ATG(?:...){%d,5000}?(?:TAG|TAA|TGA|$))' % (min_len // 3))
+    else:
+        pattern = re.compile(r'(ATG(?:...){%d,5000}?(?:TAG|TAA|TGA))' % (min_len // 3))
     
     for strand in ["Forward", "Reverse"]:
         dna = sequence if strand == "Forward" else get_rev_complement(sequence)
         for frame in range(3):
             for match in pattern.finditer(dna[frame:]):
                 gene_seq = match.group()
+                # Ensure the sequence length is a multiple of 3 (triplets)
+                if len(gene_seq) % 3 != 0:
+                    gene_seq = gene_seq[:-(len(gene_seq) % 3)]
+                
+                if len(gene_seq) < min_len: continue
+                
                 start_pos = match.start() + frame
                 found_genes.append({
                     "Strand": strand, 
@@ -42,129 +49,66 @@ def find_all_orfs(sequence, min_len=300):
                 })
     return found_genes
 
-# --- 3. SIDEBAR SETTINGS ---
-st.sidebar.header("⚙️ Pipeline Parameters")
-read_limit = st.sidebar.slider("Max Sequences to Process", 1, 5000, 1000)
-min_orf_len = st.sidebar.slider("Minimum ORF Length (bp)", 50, 2000, 300)
+# --- 3. SIDEBAR ---
+st.sidebar.header("⚙️ Analysis Settings")
+min_orf_len = st.sidebar.slider("Minimum ORF Length (bp)", 50, 1000, 150)
+allow_partial = st.sidebar.checkbox("Allow Partial Genes (No Stop Codon)", value=True)
 
-st.sidebar.subheader("🛡️ Cleaning Settings")
-enable_trim = st.sidebar.checkbox("Enable Adapter Trimming", value=False)
-trim_val = st.sidebar.slider("Trim from ends (bp)", 0, 50, 5)
-
-# --- 4. DATA UPLOAD & PROCESSING ---
-st.title("🧬 De Novo: Auto-Identifying Genomic Suite")
-st.markdown("---")
-
-uploaded_file = st.file_uploader("Upload Data (FASTQ, FASTA, or GZ)", type=["fastq", "fq", "fasta", "fa", "gz"])
+# --- 4. UPLOAD & PROCESSING ---
+st.title("🧬 De Novo: Professional Genomic Suite")
+uploaded_file = st.file_uploader("Upload FASTA or FASTQ", type=["fasta", "fa", "fastq", "fq", "txt"])
 
 if uploaded_file:
     try:
-        if uploaded_file.name.endswith('.gz'):
-            content = gzip.decompress(uploaded_file.read()).decode("utf-8")
-        else:
-            content = uploaded_file.read().decode("utf-8")
-        
+        content = uploaded_file.read().decode("utf-8")
         lines = content.splitlines()
         is_fasta = any(line.startswith('>') for line in lines[:5])
         
         if is_fasta:
-            # FIX: Join multi-line FASTA into one continuous string
-            full_data = "".join([l.strip() for l in lines if l.strip() and not l.startswith('>')])
-            raw_sequences = [full_data]
-            st.info("FASTA Format Detected: Sequence joined into a single continuous scaffold.")
+            # STITCHING: Joins all sequence lines into one continuous string
+            full_seq = "".join([l.strip() for l in lines if l.strip() and not l.startswith('>')])
+            raw_data = [full_seq]
         else:
-            # FASTQ logic: Extract sequence lines (every 2nd in 4-line block)
-            raw_sequences = [l.strip() for l in lines[1::4] if l.strip()]
-            st.info(f"FASTQ Format Detected: {len(raw_sequences)} reads found.")
+            raw_data = [l.strip() for l in lines[1::4] if l.strip()]
 
-        # Species Prediction
-        sample_seq = "".join(raw_sequences[:10])
-        sample_gc = round((sample_seq.count('G') + sample_seq.count('C')) / len(sample_seq) * 100, 2)
+        total_dna = "".join(raw_data)
+        sample_gc = round((total_dna.count('G') + total_dna.count('C')) / len(total_dna) * 100, 2)
         closest = min(SPECIES_LIBRARY.keys(), key=lambda x: abs(SPECIES_LIBRARY[x]['ref_gc'] - sample_gc))
-        
-        st.subheader("🤖 Identification Results")
-        st.success(f"Sample GC: **{sample_gc}%** | Predicted Species: **{closest}**")
-        
-        mode = st.radio("Analysis Mode:", ("Use Prediction", "Manual Species Selection"))
-        target_species = closest if mode == "Use Prediction" else st.selectbox("Select Species", list(SPECIES_LIBRARY.keys()))
-        ref = SPECIES_LIBRARY[target_species]
 
-        # --- 5. ANALYSIS ENGINE ---
-        if st.button("🚀 Run Analysis"):
-            # Filtering and Trimming
-            if enable_trim:
-                processed = [s[trim_val:-trim_val] for s in raw_sequences if len(s) > (min_orf_len + 2*trim_val)]
-            else:
-                processed = [s for s in raw_sequences if len(s) >= (min_orf_len // 2)]
+        st.info(f"**Format:** {'FASTA' if is_fasta else 'FASTQ'} | **Length:** {len(total_dna)} bp | **Predicted:** {closest}")
+
+        if st.button("🚀 Run Genomic Analysis"):
+            genes = find_all_orfs(total_dna, min_len=min_orf_len, allow_partial=allow_partial)
+            df = pd.DataFrame(genes)
             
-            # Scaffolding
-            final_scaffold = "NNNNN".join(processed[:read_limit])
-            total_len = len(final_scaffold)
+            tab1, tab2 = st.tabs(["📊 Data Metrics", "🧬 Circular Annotation"])
             
-            # Annotation
-            orfs = find_all_orfs(final_scaffold, min_len=min_orf_len)
-            genes_df = pd.DataFrame(orfs)
-            if not genes_df.empty:
-                genes_df = genes_df.sort_values('Start').drop_duplicates(subset=['Start'])
-
-            # --- 6. VISUALIZATION TABS ---
-            tab1, tab2, tab3 = st.tabs(["📊 QC Report", "🏗️ Structural Analysis", "🧬 Circular Map"])
-
             with tab1:
-                st.subheader("🛡️ Sequence Validation")
-                c1, c2 = st.columns(2)
-                c1.metric("Input Fragments", len(raw_sequences))
-                c2.metric("Valid Sequences", len(processed), f"{len(processed)-len(raw_sequences)}")
-                
-                metrics = {
-                    "Metric": ["GC Signature", "ORFs Found", "Coding Density"],
-                    "Result": [f"{sample_gc}%", f"{len(genes_df)}", f"{round((genes_df['Length'].sum()/total_len)*100,1) if not genes_df.empty else 0}%"]
-                }
-                st.table(pd.DataFrame(metrics))
+                st.metric("Total ORFs Found", len(df))
+                if not df.empty:
+                    st.subheader("🔍 Top Sequence for BLAST")
+                    top_seq = df.sort_values('Length', ascending=False).iloc[0]['Sequence']
+                    st.text_area("Copy/Paste into NCBI BLAST:", value=top_seq, height=150)
+                    st.dataframe(df.drop(columns=['Sequence']), use_container_width=True)
 
             with tab2:
-                st.subheader("🏗️ GC Skew Landmark Analysis")
-                window = 500
-                clean_genome = final_scaffold.replace("N", "")
-                p_skew, skews = [], []
-                for i in range(0, len(clean_genome) - window, window):
-                    sub = clean_genome[i:i+window]
-                    g, c = sub.count('G'), sub.count('C')
-                    skews.append((g - c) / (g + c) if (g + c) > 0 else 0)
-                    p_skew.append(i)
-
-                fig_skew = go.Figure()
-                skews_np = np.array(skews)
-                fig_skew.add_trace(go.Scatter(x=p_skew, y=np.where(skews_np >= 0, skews_np, 0), fill='tozeroy', line_color='#00CC96', name='G > C'))
-                fig_skew.add_trace(go.Scatter(x=p_skew, y=np.where(skews_np < 0, skews_np, 0), fill='tozeroy', line_color='#EF553B', name='C > G'))
-                fig_skew.update_layout(template="plotly_dark", height=400, xaxis_title="Effective Position", yaxis_title="Skew")
-                st.plotly_chart(fig_skew, use_container_width=True)
-
-            with tab3:
-                st.subheader("🧬 Circular Genome Map")
-                if genes_df.empty:
-                    st.warning("No genes meet current filters. Lower 'Minimum ORF Length' in sidebar.")
-                else:
-                    genes_df['S_Ang'] = (genes_df['Start'] / total_len) * 360
-                    genes_df['E_Ang'] = (genes_df['End'] / total_len) * 360
+                if not df.empty:
+                    df['S_Ang'] = (df['Start'] / len(total_dna)) * 360
+                    df['E_Ang'] = (df['End'] / len(total_dna)) * 360
                     
-                    fig_circ = go.Figure()
-                    for _, row in genes_df.iterrows():
-                        r_track = 2.1 if row['Strand'] == "Forward" else 1.6
+                    fig = go.Figure()
+                    for _, row in df.iterrows():
+                        track = 2.2 if row['Strand'] == "Forward" else 1.7
                         clr = "#00CC96" if row['Strand'] == "Forward" else "#EF553B"
-                        fig_circ.add_trace(go.Barpolar(
-                            r=[0.4], theta=[(row['S_Ang'] + row['E_Ang']) / 2],
-                            width=[max(2, row['E_Ang'] - row['S_Ang'])], base=r_track,
-                            marker_color=clr, hovertext=f"{row['Strand']} Gene: {row['Length']}bp"
+                        fig.add_trace(go.Barpolar(
+                            r=[0.4], theta=[(row['S_Ang']+row['E_Ang'])/2],
+                            width=[max(2, row['E_Ang']-row['S_Ang'])], 
+                            base=track, marker_color=clr, name=row['Strand']
                         ))
-                    
-                    fig_circ.update_layout(template="plotly_dark", polar=dict(hole=0.4, radialaxis=dict(showticklabels=False, range=[0, 3])), height=700)
-                    st.plotly_chart(fig_circ, use_container_width=True)
-                    
-                    st.subheader("🔍 BLAST Validation Helper")
-                    top_gene = genes_df.sort_values('Length', ascending=False).iloc[0]
-                    st.text_area("Copy this for NCBI BLAST:", value=top_gene['Sequence'], height=150)
-                    st.dataframe(genes_df.drop(columns=['Sequence']), use_container_width=True)
+                    fig.update_layout(template="plotly_dark", polar=dict(hole=0.4, radialaxis=dict(visible=False)), height=600)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("No genes found. Try lowering the Minimum ORF Length.")
 
     except Exception as e:
         st.error(f"Error: {e}")
