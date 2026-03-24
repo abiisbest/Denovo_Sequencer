@@ -19,6 +19,15 @@ def get_rev_complement(seq):
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
     return "".join(complement.get(base, base) for base in reversed(seq))
 
+def remove_adapters(reads, adapter_seq, min_keep_len):
+    cleaned_reads = []
+    for read in reads:
+        if adapter_seq and adapter_seq in read:
+            read = read.split(adapter_seq)[0]
+        if len(read) >= min_keep_len:
+            cleaned_reads.append(read)
+    return cleaned_reads
+
 def find_all_orfs(sequence, min_len=300, allow_partial=True):
     found_genes = []
     pattern_str = r'(ATG(?:...){%d,5000}?(?:TAG|TAA|TGA%s))' % (min_len // 3, '|$' if allow_partial else '')
@@ -40,7 +49,6 @@ def find_all_orfs(sequence, min_len=300, allow_partial=True):
                     "Sequence": gene_seq
                 })
     
-    # Filter Overlaps (Keep longest)
     sorted_genes = sorted(found_genes, key=lambda x: x['Length'], reverse=True)
     final_genes, covered = [], []
     for g in sorted_genes:
@@ -48,7 +56,6 @@ def find_all_orfs(sequence, min_len=300, allow_partial=True):
             final_genes.append(g)
             covered.append((g['Start'], g['End']))
     
-    # Sort by Start position and assign Names
     final_genes = sorted(final_genes, key=lambda x: x['Start'])
     for i, gene in enumerate(final_genes):
         gene['Name'] = f"ORF_{i+1}"
@@ -60,6 +67,11 @@ st.sidebar.header("⚙️ Pipeline Settings")
 viz_mode = st.sidebar.radio("Map Visualization:", ("Linear Track", "Circular Map"))
 min_orf_len = st.sidebar.slider("Minimum ORF Length (bp)", 50, 1000, 300)
 allow_partial = st.sidebar.checkbox("Allow Partial Genes", value=True)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Trimming Settings")
+trim_active = st.sidebar.toggle("Enable QC Trimming", value=True)
+adapter_seq = st.sidebar.text_input("Adapter to Remove", "AGATCGGAAGAG")
+min_read_len = st.sidebar.slider("Min Read Length to Keep", 10, 100, 30)
 
 # --- 4. PROCESSING ---
 st.title("🧬 De Novo: Professional Genomic Suite")
@@ -73,23 +85,60 @@ if uploaded_file:
         lines = content.splitlines()
         is_fasta = any(line.startswith('>') for line in lines[:5])
         
-        full_seq = "".join([l.strip() for l in lines if l.strip() and not l.startswith('>')]) if is_fasta else "NNNNN".join([l.strip() for l in lines[1::4] if l.strip()][:1000])
-        
-        total_len = len(full_seq)
-        sample_gc = round((full_seq.count('G') + full_seq.count('C')) / (total_len - full_seq.count('N') + 1) * 100, 2)
-        
-        st.info(f"**Format:** {'FASTA' if is_fasta else 'FASTQ'} | **Total Length:** {total_len} bp | **GC:** {sample_gc}%")
+        # Raw Data Extraction
+        if is_fasta:
+            raw_reads = ["".join([l.strip() for l in lines if l.strip() and not l.startswith('>')])]
+        else:
+            raw_reads = [l.strip() for l in lines[1::4] if l.strip()]
+
+        # 1. Capture Raw Metrics
+        raw_count = len(raw_reads)
+        raw_avg_len = sum(len(r) for r in raw_reads) / raw_count if raw_count > 0 else 0
 
         if st.button("🚀 Run Analysis"):
+            # 2. Apply Trimming/QC
+            if trim_active:
+                processed_reads = remove_adapters(raw_reads, adapter_seq, min_read_len)
+            else:
+                processed_reads = raw_reads
+
+            # 3. Capture Processed Metrics
+            proc_count = len(processed_reads)
+            proc_avg_len = sum(len(r) for r in processed_reads) / proc_count if proc_count > 0 else 0
+            
+            if proc_count == 0:
+                st.error("QC filters removed all reads. Please adjust settings.")
+                st.stop()
+
+            full_seq = "NNNNN".join(processed_reads[:1000])
+            total_len = len(full_seq)
+            sample_gc = round((full_seq.count('G') + full_seq.count('C')) / (total_len - full_seq.count('N') + 1) * 100, 2)
+            
             raw_genes = find_all_orfs(full_seq, min_len=min_orf_len, allow_partial=allow_partial)
             df = pd.DataFrame(raw_genes)
-            t1, t2 = st.tabs(["📊 Metrics", "🧬 Genomic Map"])
+            
+            t1, t2 = st.tabs(["📊 QC & Metrics", "🧬 Genomic Map"])
             
             with t1:
-                st.metric("ORFs Detected", len(df))
+                st.subheader("🛡️ Quality Control Comparison")
+                qc_col1, qc_col2, qc_col3 = st.columns(3)
+                qc_col1.metric("Reads: Before vs After", f"{proc_count}", f"{proc_count - raw_count}")
+                qc_col2.metric("Avg Length: Before vs After", f"{proc_avg_len:.1f}bp", f"{proc_avg_len - raw_avg_len:.1f}bp")
+                qc_col3.metric("Retention Rate", f"{(proc_count/raw_count)*100:.1f}%")
+
+                st.markdown("---")
+                st.write("#### Detailed Comparison Table")
+                comparison_df = pd.DataFrame({
+                    "Stage": ["Raw Data (Input)", "Processed Data (Output)"],
+                    "Total Reads": [raw_count, proc_count],
+                    "Avg Read Length": [f"{raw_avg_len:.1f} bp", f"{proc_avg_len:.1f} bp"],
+                    "Max Read Length": [max(len(r) for r in raw_reads), max(len(r) for r in processed_reads)]
+                })
+                st.table(comparison_df)
+
+                st.markdown("---")
+                st.metric("Final ORFs Detected", len(df))
                 if not df.empty:
-                    st.subheader("🔍 Top ORF for BLAST")
-                    st.text_area("Copy into NCBI:", df.sort_values('Length', ascending=False).iloc[0]['Sequence'], height=100)
                     st.dataframe(df.drop(columns=['Sequence']), use_container_width=True)
 
             with t2:
@@ -100,23 +149,12 @@ if uploaded_file:
                     for _, row in df.iterrows():
                         clr = "#00CC96" if row['Strand'] == "Forward" else "#EF553B"
                         fig.add_trace(go.Bar(
-                            name=row['Name'],
-                            x=[row['Length']], 
-                            y=[row['Strand']], 
-                            base=[row['Start']], 
-                            orientation='h', 
-                            marker_color=clr,
-                            hovertext=f"Name: {row['Name']}<br>Start: {row['Start']}<br>End: {row['End']}<br>GC: {row['GC %']}%",
+                            name=row['Name'], x=[row['Length']], y=[row['Strand']], 
+                            base=[row['Start']], orientation='h', marker_color=clr,
+                            hovertext=f"Name: {row['Name']}<br>Start: {row['Start']}<br>GC: {row['GC %']}%",
                             hoverinfo="text"
                         ))
-                    fig.update_layout(
-                        template="plotly_dark", 
-                        barmode='stack', 
-                        height=400, 
-                        title="Linear ORF Map",
-                        showlegend=True,
-                        legend_title="Gene Names"
-                    )
+                    fig.update_layout(template="plotly_dark", barmode='stack', title="Linear ORF Map")
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     df['S_Ang'], df['E_Ang'] = (df['Start']/total_len)*360, (df['End']/total_len)*360
@@ -124,23 +162,12 @@ if uploaded_file:
                     for _, row in df.iterrows():
                         track, clr = (2.1, "#00CC96") if row['Strand']=="Forward" else (1.6, "#EF553B")
                         fig.add_trace(go.Barpolar(
-                            name=row['Name'],
-                            r=[0.4], 
-                            theta=[(row['S_Ang']+row['E_Ang'])/2], 
-                            width=[max(1, row['E_Ang']-row['S_Ang'])], 
-                            base=track, 
-                            marker_color=clr,
-                            hovertext=f"Name: {row['Name']}<br>Start: {row['Start']}<br>End: {row['End']}<br>GC: {row['GC %']}%",
+                            name=row['Name'], r=[0.4], theta=[(row['S_Ang']+row['E_Ang'])/2], 
+                            width=[max(1, row['E_Ang']-row['S_Ang'])], base=track, marker_color=clr,
+                            hovertext=f"Name: {row['Name']}<br>Start: {row['Start']}<br>GC: {row['GC %']}%",
                             hoverinfo="text"
                         ))
-                    fig.update_layout(
-                        template="plotly_dark", 
-                        polar=dict(hole=0.4, radialaxis=dict(visible=False)), 
-                        height=700, 
-                        title="Circular Genome Map",
-                        showlegend=True,
-                        legend_title="Gene Names"
-                    )
+                    fig.update_layout(template="plotly_dark", polar=dict(hole=0.4, radialaxis=dict(visible=False)), height=700, title="Circular Genome Map")
                     st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
